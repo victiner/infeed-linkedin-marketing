@@ -53,7 +53,7 @@ router.post('/import', async (req, res) => {
 
   try {
     // Resolve sender ID — use provided, or skip (cold opener won't send without one)
-    let resolvedSenderId = senderId || '';
+    let resolvedSenderId = senderId || process.env.HEYREACH_DEFAULT_SENDER_ID || '';
 
     // Create lead
     const lead = store.upsertLead({
