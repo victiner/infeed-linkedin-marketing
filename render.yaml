@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: linkedin-nurture
+    env: node
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: HEYREACH_API_KEY
+        sync: false
+      - key: WEBHOOK_SECRET
+        generateValue: true
+      - key: ENABLE_POLLER
+        value: "false"
