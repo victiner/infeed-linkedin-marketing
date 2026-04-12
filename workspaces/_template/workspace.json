@@ -1,0 +1,135 @@
+{
+  "_instructions": "Copy this folder, rename it to your workspace ID (e.g. 'mycompany'), fill in every field below, then set WORKSPACE_ID=mycompany in your .env file.",
+
+  "company": {
+    "name": "",
+    "tagline": "",
+    "what_it_is": "",
+    "what_it_is_not": ""
+  },
+
+  "audiences": [
+    { "segment": "", "description": "" }
+  ],
+
+  "services": [
+    { "name": "", "description": "" }
+  ],
+
+  "plans": [
+    { "name": "", "price": "", "includes": "", "default": true }
+  ],
+
+  "industries": [],
+
+  "senders": [],
+  "_senders_help": "Array of HeyReach linkedInAccountId values for this business. Add one ID per HeyReach account. Webhooks from these senders get routed here automatically.",
+
+
+  "differentiators": [],
+
+  "pricing_rules": {
+    "never_mention_before": "lead has engaged with the value offering",
+    "introduce_at": "close stage only",
+    "framing": "",
+    "default_recommendation": ""
+  },
+
+  "messaging": {
+    "voice": "",
+    "register": "DM-style, not email-style",
+    "rules": ["Short and direct", "Fragments OK", "Use contractions", "Mirror recipient's register", "Never sound like a template"],
+    "opener_examples": [],
+    "value_examples": [],
+    "close_examples": [],
+    "forbidden_phrases": [
+      "I hope this message finds you well",
+      "I wanted to reach out",
+      "I came across your profile",
+      "Would love to connect",
+      "Please let me know if you have any questions",
+      "Best regards", "Kind regards", "Warm regards",
+      "Thanks so much", "Thank you so much",
+      "I just wanted to", "Just checking in", "Just following up",
+      "Amazing!", "Fantastic!", "Great!",
+      "Excited to", "Would love to"
+    ]
+  },
+
+  "seniority_levels": [
+    { "level": "senior_exec", "keywords": ["managing director", "md", "partner", "head of", "chief", "ceo", "cfo", "coo", "founder", "co-founder", "executive", "president"], "tone": "respectful_concise" },
+    { "level": "vp_director", "keywords": ["vice president", "vp", "director", "principal", "senior manager"], "tone": "respectful_concise" },
+    { "level": "associate", "keywords": ["associate", "senior analyst", "consultant", "engagement manager"], "tone": "professional_warm" },
+    { "level": "analyst", "keywords": ["analyst", "junior", "entry level", "first year"], "tone": "student_casual" },
+    { "level": "intern", "keywords": ["intern", "internship", "trainee", "placement", "work experience"], "tone": "student_casual" },
+    { "level": "student", "keywords": ["student", "university", "bachelor", "master", "mba", "graduating", "undergrad", "phd"], "tone": "student_casual" }
+  ],
+
+  "industry_keywords": {
+    "general": []
+  },
+
+  "avatars": [
+    {
+      "id": "student",
+      "name": "Student",
+      "seniority": "student",
+      "tone": "student_casual",
+      "description": "",
+      "keywords": { "role": [], "industry": [], "intent": [] },
+      "pain_points": [],
+      "messaging_angle": ""
+    },
+    {
+      "id": "intern",
+      "name": "Intern",
+      "seniority": "intern",
+      "tone": "student_casual",
+      "description": "",
+      "keywords": { "role": [], "industry": [], "intent": [] },
+      "pain_points": [],
+      "messaging_angle": ""
+    },
+    {
+      "id": "analyst",
+      "name": "Analyst",
+      "seniority": "analyst",
+      "tone": "student_casual",
+      "description": "",
+      "keywords": { "role": [], "industry": [], "intent": [] },
+      "pain_points": [],
+      "messaging_angle": ""
+    },
+    {
+      "id": "associate",
+      "name": "Associate",
+      "seniority": "associate",
+      "tone": "professional_warm",
+      "description": "",
+      "keywords": { "role": [], "industry": [], "intent": [] },
+      "pain_points": [],
+      "messaging_angle": ""
+    },
+    {
+      "id": "senior",
+      "name": "Senior Professional",
+      "seniority": ["vp_director", "senior_exec"],
+      "tone": "respectful_concise",
+      "description": "",
+      "keywords": { "role": [], "industry": [], "intent": [] },
+      "pain_points": [],
+      "messaging_angle": ""
+    }
+  ],
+
+  "assets": {
+    "job_lists": [],
+    "trial_links": [],
+    "landing_pages": [],
+    "payment_links": [],
+    "onboarding_links": [],
+    "booking_links": []
+  },
+
+  "training_scenarios": []
+}
