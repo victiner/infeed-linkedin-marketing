@@ -1,0 +1,254 @@
+{
+  "company": {
+    "name": "InFeed",
+    "tagline": "High-finance career intelligence platform",
+    "what_it_is": "Subscription-based service that surfaces relevant finance roles and handles the entire application process on behalf of users",
+    "what_it_is_not": "Not a job board — a curated pipeline product built around each candidate's trajectory"
+  },
+
+  "audiences": [
+    { "segment": "students", "description": "Seeking internships and entry-level roles in high finance" },
+    { "segment": "young_professionals", "description": "Pursuing analyst or associate-level moves" },
+    { "segment": "experienced_professionals", "description": "Looking for relevant openings in a structured, discreet way" }
+  ],
+
+  "services": [
+    { "name": "Intelligence pipeline", "description": "Surfaces relevant, often unadvertised roles filtered to the lead's background and goals" },
+    { "name": "Backend application execution", "description": "Handles CV tailoring, cover letter writing, and submission — user picks positions, we do the rest" }
+  ],
+
+  "plans": [
+    { "name": "Professional", "price": "€39/month", "includes": "Intelligence pipeline + backend application support" },
+    { "name": "Professional Plus", "price": "€69/month", "includes": "Intelligence pipeline + 5x more backend applications", "default": true },
+    { "name": "Enterprise", "price": "On request", "includes": "Tailored setup for larger or customised needs" }
+  ],
+
+  "industries": ["Investment Banking", "Private Equity", "Asset Management", "Strategy Consulting", "Venture Capital"],
+
+  "senders": [],
+  "_senders_help": "Array of HeyReach linkedInAccountId values belonging to this business. Webhooks and poller messages from these senders will be routed to this workspace. Add your HeyReach account IDs here. Example: [\"7f3c2a1b-...\", \"8e4d3b2c-...\"]",
+
+
+  "differentiators": [
+    "Curated, not aggregated — roles matched to candidate trajectory",
+    "Full application execution, not just listings",
+    "Surfaces unadvertised positions",
+    "Handles the tedious backend so candidates focus on decisions"
+  ],
+
+  "pricing_rules": {
+    "never_mention_before": "lead has engaged with the value offering",
+    "introduce_at": "close stage only",
+    "framing": "Ongoing workflow subscription, not a one-off purchase",
+    "default_recommendation": "professional_plus"
+  },
+
+  "messaging": {
+    "voice": "Peer who happens to know about great opportunities — not a recruiter, not a salesperson",
+    "register": "DM-style, not email-style",
+    "rules": ["Short and direct", "Fragments OK", "Use contractions", "Mirror recipient's register", "Never sound like a template"],
+    "opener_examples": [
+      "PE still on your radar this year?",
+      "LBS this season — finance or strategy?",
+      "Still looking at IB roles?"
+    ],
+    "value_examples": [
+      "Here's 14 PE roles for your background: [link]. We handle the applications too — CV, cover letter, submission.",
+      "Pulled a list that fits: [link]. We take care of the application side if you want to move on any."
+    ],
+    "close_examples": [
+      "20 mins this week? [cal link]",
+      "Here's the link: [payment link]"
+    ],
+    "forbidden_phrases": [
+      "I hope this message finds you well",
+      "I wanted to reach out",
+      "I came across your profile",
+      "Would love to connect",
+      "Please let me know if you have any questions",
+      "Best regards", "Kind regards", "Warm regards",
+      "Thanks so much", "Thank you so much",
+      "I just wanted to", "Just checking in", "Just following up",
+      "Amazing!", "Fantastic!", "Great!",
+      "Excited to", "Would love to"
+    ]
+  },
+
+  "seniority_levels": [
+    { "level": "senior_exec", "keywords": ["managing director", "md", "partner", "head of", "chief", "ceo", "cfo", "coo", "founder", "co-founder", "executive", "president"], "tone": "respectful_concise" },
+    { "level": "vp_director", "keywords": ["vice president", "vp", "director", "principal", "senior manager", "portfolio manager"], "tone": "respectful_concise" },
+    { "level": "associate", "keywords": ["associate", "senior analyst", "consultant", "engagement manager", "project leader"], "tone": "professional_warm" },
+    { "level": "analyst", "keywords": ["analyst", "junior", "graduate programme", "entry level", "first year", "graduate analyst"], "tone": "student_casual" },
+    { "level": "intern", "keywords": ["intern", "internship", "summer analyst", "placement", "trainee", "work experience", "off-cycle"], "tone": "student_casual" },
+    { "level": "student", "keywords": ["student", "university", "bachelor", "master", "mba", "graduating", "final year", "undergrad", "phd", "studying", "freshman", "sophomore"], "tone": "student_casual" }
+  ],
+
+  "industry_keywords": {
+    "investment-banking-students": ["investment banking", "ib", "m&a", "leveraged finance", "dcm", "ecm", "capital markets", "restructuring"],
+    "strategy-consulting": ["consulting", "strategy", "mckinsey", "bain", "bcg", "advisory", "management consulting"],
+    "vc-aspiring": ["venture capital", "vc", "startup", "seed", "series a", "growth equity", "tech investing"],
+    "employer-branding": ["recruiter", "talent", "hr", "hiring", "employer brand", "campus"],
+    "general": ["finance", "banking", "asset management", "hedge fund", "corporate finance", "private equity", "pe"]
+  },
+
+  "avatars": [
+    {
+      "id": "student",
+      "name": "Student",
+      "seniority": "student",
+      "tone": "student_casual",
+      "description": "University student targeting internships or entry-level roles in high finance",
+      "keywords": {
+        "role": ["student", "undergraduate", "bachelor", "master", "mba", "final year", "penultimate", "graduating"],
+        "industry": ["investment banking", "private equity", "consulting", "venture capital", "asset management"],
+        "intent": ["internship", "spring week", "insight week", "summer analyst", "graduate programme", "placement"]
+      },
+      "pain_points": ["Overwhelmed by application volume", "Hard to find unadvertised roles", "CV tailoring per firm is time-consuming"],
+      "messaging_angle": "Peer who already knows which roles are open and handles the application grind for you"
+    },
+    {
+      "id": "intern",
+      "name": "Intern",
+      "seniority": "intern",
+      "tone": "student_casual",
+      "description": "Current or recent intern looking to convert or land next role",
+      "keywords": {
+        "role": ["intern", "summer analyst", "trainee", "off-cycle intern", "placement student"],
+        "industry": ["investment banking", "private equity", "consulting", "corporate finance"],
+        "intent": ["conversion", "return offer", "full-time offer", "next internship", "lateral"]
+      },
+      "pain_points": ["Worried about conversion", "Wants backup options", "Limited time during internship"],
+      "messaging_angle": "We surface roles and handle applications while you focus on your current seat"
+    },
+    {
+      "id": "analyst",
+      "name": "Analyst",
+      "seniority": "analyst",
+      "tone": "student_casual",
+      "description": "Junior analyst (1-3 years) looking for next move",
+      "keywords": {
+        "role": ["analyst", "junior analyst", "graduate analyst", "senior analyst"],
+        "industry": ["investment banking", "private equity", "hedge fund", "asset management", "restructuring", "m&a"],
+        "intent": ["lateral", "exit opportunities", "buy-side", "next move", "pe recruiting"]
+      },
+      "pain_points": ["Too busy to job search", "Needs discretion", "PE/HF recruiting is opaque"],
+      "messaging_angle": "Discreet, curated roles matched to your background — we do the legwork"
+    },
+    {
+      "id": "associate",
+      "name": "Associate",
+      "seniority": "associate",
+      "tone": "professional_warm",
+      "description": "Mid-level professional (3-6 years) exploring selective next steps",
+      "keywords": {
+        "role": ["associate", "senior associate", "consultant", "engagement manager"],
+        "industry": ["private equity", "growth equity", "venture capital", "consulting", "corporate development"],
+        "intent": ["selective", "next step", "principal track", "fund move", "pivot"]
+      },
+      "pain_points": ["Only moves for the right opportunity", "Values discretion", "Time-poor"],
+      "messaging_angle": "Relevant, selective opportunities matched to where you are — no noise"
+    },
+    {
+      "id": "senior",
+      "name": "Senior Professional",
+      "seniority": ["vp_director", "senior_exec"],
+      "tone": "respectful_concise",
+      "description": "VP+ level — values discretion above all",
+      "keywords": {
+        "role": ["vice president", "vp", "director", "managing director", "partner", "head of"],
+        "industry": ["private equity", "asset management", "hedge fund", "investment banking", "family office"],
+        "intent": ["passive", "discreet", "selective", "confidential"]
+      },
+      "pain_points": ["Time-poor", "Reputation-sensitive", "Only moves for something exceptional"],
+      "messaging_angle": "Relevant senior-level roles, surfaced discreetly. No noise."
+    }
+  ],
+
+  "assets": {
+    "job_lists": [
+      { "id": "jl-ib-pe-2025", "name": "IB & PE Analyst Roles — Q2 2025", "segment": "investment-banking-students", "url": "https://infeed.co/jobs/ib-pe-q2-2025", "description": "47 curated IB and PE analyst roles across London and NYC", "tags": ["investment-banking", "private-equity", "analyst"], "active": true },
+      { "id": "jl-strategy-2025", "name": "Tech Strategy & Consulting Roles", "segment": "strategy-consulting", "url": "https://infeed.co/jobs/strategy-consulting-2025", "description": "31 strategy and consulting roles at top-tier firms", "tags": ["strategy", "consulting"], "active": true },
+      { "id": "jl-vc-2025", "name": "VC & Growth Equity Roles", "segment": "vc-aspiring", "url": "https://infeed.co/jobs/vc-growth-2025", "description": "22 VC analyst and associate roles", "tags": ["venture-capital", "growth-equity"], "active": true },
+      { "id": "jl-general", "name": "Top Graduate Finance & Strategy Roles", "segment": "general", "url": "https://infeed.co/jobs/top-roles", "description": "Curated high-quality finance and strategy roles", "tags": ["general", "graduate"], "active": true }
+    ],
+    "trial_links": [
+      { "id": "trial-standard", "name": "Free Trial — 20 Application Credits", "url": "https://infeed.co/trial", "description": "20 free credits to try the application service", "credits": 20, "active": true }
+    ],
+    "landing_pages": [
+      { "id": "lp-employer-branding", "name": "Employer Branding Overview", "offer": "employer-branding", "url": "https://infeed.co/employers", "description": "How we help employers reach high-intent talent", "active": true },
+      { "id": "lp-how-it-works", "name": "How It Works", "offer": "general", "url": "https://infeed.co/how-it-works", "description": "Quick overview of the service", "active": true }
+    ],
+    "payment_links": [
+      { "id": "pay-monthly", "name": "Monthly Subscription", "offer": "applications-monthly", "url": "https://infeed.co/checkout/applications-monthly", "description": "Continue the service — monthly, cancel anytime", "active": true },
+      { "id": "pay-annual", "name": "Annual Subscription (save 30%)", "offer": "applications-annual", "url": "https://infeed.co/checkout/applications-annual", "description": "Annual plan with invoice for reimbursement", "active": true },
+      { "id": "pay-employer", "name": "Employer Package", "offer": "employer-branding", "url": "https://infeed.co/employers/quote", "description": "Employer branding — custom pricing", "active": true }
+    ],
+    "onboarding_links": [
+      { "id": "onboard-trial", "name": "Start Your Free Trial", "product": "trial", "url": "https://infeed.co/onboard/trial", "description": "Set up your profile and start", "active": true }
+    ],
+    "booking_links": [
+      { "id": "book-call", "name": "Book a Call", "url": "https://cal.com/infeed/intro", "description": "20-minute intro call", "active": true }
+    ]
+  },
+
+  "training_scenarios": [
+
+    { "stage": "cold_opener", "seniority": "student", "lead": { "name": "Erik Lindqvist", "role": "Student at LBS", "company": "LBS", "location": "London", "background": "Penultimate year, targeting IB summer analyst" }, "lastMessage": null, "context": "First outreach — final-year IB-aspiring student", "sentiment": "neutral" },
+    { "stage": "cold_opener", "seniority": "student", "lead": { "name": "Amelia Chen", "role": "MBA candidate at INSEAD", "company": "INSEAD", "location": "Fontainebleau", "background": "Post-MBA recruiting for PE associate roles" }, "lastMessage": null, "context": "First outreach — MBA PE recruit", "sentiment": "neutral" },
+    { "stage": "cold_opener", "seniority": "student", "lead": { "name": "Oscar Berg", "role": "Final year BSc at SSE", "company": "SSE", "location": "Stockholm", "background": "Targeting Nordic IB boutiques" }, "lastMessage": null, "context": "First outreach — Nordic IB student", "sentiment": "neutral" },
+    { "stage": "value_pitch", "seniority": "student", "lead": { "name": "Sofia Marchetti", "role": "Student at Bocconi", "company": "Bocconi", "location": "Milan", "background": "Final year, PE-focused" }, "lastMessage": "Yeah PE is what I'm really going for", "context": "Positive reply to cold opener — deliver PE job list", "sentiment": "positive", "assetSegment": "investment-banking-students" },
+    { "stage": "value_pitch", "seniority": "student", "lead": { "name": "Daniel Kim", "role": "Student at LSE", "company": "LSE", "location": "London", "background": "Exploring IB vs strategy" }, "lastMessage": "Interesting, what kind of roles are you seeing?", "context": "Curious — needs value delivery + service intro", "sentiment": "curious", "assetSegment": "investment-banking-students" },
+    { "stage": "close", "seniority": "student", "lead": { "name": "Hanna Bergström", "role": "MBA at HEC Paris", "company": "HEC", "location": "Paris", "background": "Top-tier MBA recruiting" }, "lastMessage": "How do I actually get started?", "context": "Ready to subscribe — send payment link", "sentiment": "buying_signal", "nextObjection": "may ask for annual vs monthly" },
+    { "stage": "objection", "seniority": "student", "lead": { "name": "Anders Svensson", "role": "Student at KTH", "company": "KTH", "location": "Stockholm", "background": "Engineering background, pivoting to finance" }, "lastMessage": "I don't think I can afford that as a student", "context": "Price objection — student budget concerns", "sentiment": "negative", "nextObjection": "price" },
+    { "stage": "objection", "seniority": "student", "lead": { "name": "Rahul Patel", "role": "MSc Finance at Imperial", "company": "Imperial", "location": "London", "background": "Wants proof service works" }, "lastMessage": "What makes this different from LinkedIn Jobs?", "context": "Skepticism — needs differentiation", "sentiment": "neutral", "nextObjection": "competitive alternatives" },
+    { "stage": "follow_up", "seniority": "student", "lead": { "name": "Clara Dupont", "role": "Student at ESSEC", "company": "ESSEC", "location": "Paris", "background": "Went quiet after value pitch" }, "lastMessage": null, "context": "No reply in 3 days after job list sent", "sentiment": "neutral" },
+
+    { "stage": "cold_opener", "seniority": "intern", "lead": { "name": "Lucas Moreau", "role": "Summer Analyst at BNP Paribas", "company": "BNP Paribas", "location": "Paris", "background": "Converting risk, exploring lateral" }, "lastMessage": null, "context": "First outreach — summer intern worried about conversion", "sentiment": "neutral" },
+    { "stage": "cold_opener", "seniority": "intern", "lead": { "name": "Noa Cohen", "role": "Off-cycle Intern at Lazard", "company": "Lazard", "location": "London", "background": "6-month placement, targeting full-time" }, "lastMessage": null, "context": "First outreach — off-cycle with return offer pressure", "sentiment": "neutral" },
+    { "stage": "natural_response", "seniority": "intern", "lead": { "name": "Felix Wagner", "role": "Summer Analyst at Rothschild", "company": "Rothschild", "location": "Frankfurt", "background": "Fast responder, building rapport" }, "lastMessage": "Haha yeah the summer is brutal", "context": "Fast responder — build rapport before pitching", "sentiment": "positive" },
+    { "stage": "value_pitch", "seniority": "intern", "lead": { "name": "Isabella Rossi", "role": "Intern at Mediobanca", "company": "Mediobanca", "location": "Milan", "background": "Wants options if return offer falls through" }, "lastMessage": "Yeah I want to line up backups in case", "context": "Wants contingency plan — deliver value + service", "sentiment": "positive", "assetSegment": "investment-banking-students" },
+    { "stage": "close", "seniority": "intern", "lead": { "name": "Maxime Laurent", "role": "Intern at Societe Generale", "company": "SocGen", "location": "Paris", "background": "Ready to start using the service" }, "lastMessage": "Ok let's do it, how do I sign up?", "context": "Buying signal — send payment/onboarding link", "sentiment": "buying_signal" },
+    { "stage": "objection", "seniority": "intern", "lead": { "name": "Tomas Kovac", "role": "Intern at Raiffeisen", "company": "Raiffeisen", "location": "Vienna", "background": "Worried about time commitment" }, "lastMessage": "I don't have any time with the internship hours", "context": "Time objection — needs reassurance about low effort", "sentiment": "negative", "nextObjection": "time_commitment" },
+    { "stage": "objection", "seniority": "intern", "lead": { "name": "Priya Desai", "role": "Summer Analyst at Deutsche Bank", "company": "Deutsche Bank", "location": "London", "background": "Skeptical about curated lists" }, "lastMessage": "Can you show me an example of what you actually send?", "context": "Needs proof — wants to see job list quality", "sentiment": "neutral", "nextObjection": "proof" },
+    { "stage": "follow_up", "seniority": "intern", "lead": { "name": "Yuki Tanaka", "role": "Off-cycle at Nomura", "company": "Nomura", "location": "London", "background": "No reply after 4 days" }, "lastMessage": null, "context": "Silent — one nudge then move on", "sentiment": "neutral" },
+
+    { "stage": "cold_opener", "seniority": "analyst", "lead": { "name": "Marcus Lindström", "role": "Analyst at Goldman Sachs", "company": "Goldman Sachs", "location": "London", "background": "2 years in IB, considering PE" }, "lastMessage": null, "context": "First outreach — GS analyst thinking about exit", "sentiment": "neutral" },
+    { "stage": "cold_opener", "seniority": "analyst", "lead": { "name": "Klara Nyberg", "role": "Analyst at Carnegie", "company": "Carnegie", "location": "Stockholm", "background": "3rd year, wants Nordic PE" }, "lastMessage": null, "context": "First outreach — Nordic IB senior analyst", "sentiment": "neutral" },
+    { "stage": "cold_opener", "seniority": "analyst", "lead": { "name": "James O'Connor", "role": "Analyst at JP Morgan", "company": "JP Morgan", "location": "London", "background": "LevFin, thinking about credit funds" }, "lastMessage": null, "context": "First outreach — LevFin analyst", "sentiment": "neutral" },
+    { "stage": "value_pitch", "seniority": "analyst", "lead": { "name": "Elena Popov", "role": "Analyst at Morgan Stanley", "company": "Morgan Stanley", "location": "London", "background": "Year 2, exploring buyside" }, "lastMessage": "Yeah I've been thinking about the next step", "context": "Soft yes — deliver job list + service", "sentiment": "positive", "assetSegment": "investment-banking-students" },
+    { "stage": "value_pitch", "seniority": "analyst", "lead": { "name": "Nils Olsen", "role": "Analyst at Nordea", "company": "Nordea", "location": "Oslo", "background": "Corporate banking, wants transaction work" }, "lastMessage": "What kind of funds are on your list?", "context": "Curious — wants specifics on fund quality", "sentiment": "curious", "assetSegment": "general" },
+    { "stage": "close", "seniority": "analyst", "lead": { "name": "Ayse Demir", "role": "Analyst at Is Yatirim", "company": "Is Yatirim", "location": "Istanbul", "background": "Looking for London PE" }, "lastMessage": "Ok I'm in, what's the next step?", "context": "Ready to sign up — send onboarding link", "sentiment": "buying_signal" },
+    { "stage": "close", "seniority": "analyst", "lead": { "name": "Liam Harris", "role": "Analyst at Jefferies", "company": "Jefferies", "location": "London", "background": "Wants to book a call" }, "lastMessage": "Can we jump on a quick call this week?", "context": "Ready for call — send booking link", "sentiment": "buying_signal" },
+    { "stage": "objection", "seniority": "analyst", "lead": { "name": "Greta Müller", "role": "Analyst at Deutsche Bank", "company": "Deutsche Bank", "location": "Frankfurt", "background": "Passive, not actively looking" }, "lastMessage": "I'm not actively looking right now", "context": "Passive candidate — keep warm, don't push", "sentiment": "neutral", "nextObjection": "not_looking" },
+    { "stage": "objection", "seniority": "analyst", "lead": { "name": "Viktor Ilyin", "role": "Analyst at VTB", "company": "VTB", "location": "London", "background": "Price-sensitive" }, "lastMessage": "€69 a month feels steep for what you're describing", "context": "Price objection — needs ROI framing", "sentiment": "negative", "nextObjection": "price" },
+    { "stage": "objection", "seniority": "analyst", "lead": { "name": "Margot Lefevre", "role": "Analyst at Credit Agricole", "company": "Credit Agricole", "location": "Paris", "background": "Has a headhunter already" }, "lastMessage": "I'm already working with a headhunter", "context": "Has alternative solution — differentiate from search firms", "sentiment": "negative", "nextObjection": "has_alternative" },
+    { "stage": "objection", "seniority": "analyst", "lead": { "name": "Hugo Santos", "role": "Analyst at Santander", "company": "Santander", "location": "Madrid", "background": "Worried about confidentiality" }, "lastMessage": "How do I know my current firm won't find out?", "context": "Confidentiality concern — needs reassurance", "sentiment": "neutral", "nextObjection": "confidentiality" },
+    { "stage": "follow_up", "seniority": "analyst", "lead": { "name": "Jana Horak", "role": "Analyst at Erste Group", "company": "Erste", "location": "Vienna", "background": "No reply in 5 days" }, "lastMessage": null, "context": "Silent after value pitch — single line nudge", "sentiment": "neutral" },
+
+    { "stage": "cold_opener", "seniority": "associate", "lead": { "name": "Johan Nilsson", "role": "Associate at EQT", "company": "EQT", "location": "Stockholm", "background": "3 years PE, thinking about next step" }, "lastMessage": null, "context": "First outreach — PE associate exploring next move", "sentiment": "neutral" },
+    { "stage": "cold_opener", "seniority": "associate", "lead": { "name": "Alessandra Ricci", "role": "Associate at Permira", "company": "Permira", "location": "London", "background": "Year 2, post-MBA track" }, "lastMessage": null, "context": "First outreach — post-MBA associate", "sentiment": "neutral" },
+    { "stage": "value_pitch", "seniority": "associate", "lead": { "name": "Benedikt Hoffmann", "role": "Associate at Bain Capital", "company": "Bain Capital", "location": "Munich", "background": "Selective, wants top funds only" }, "lastMessage": "What funds are actually hiring right now?", "context": "Selective — needs high-quality fund list", "sentiment": "curious", "assetSegment": "investment-banking-students" },
+    { "stage": "value_pitch", "seniority": "associate", "lead": { "name": "Charlotte Bernard", "role": "Senior Associate at McKinsey", "company": "McKinsey", "location": "Paris", "background": "Consulting to PE pivot" }, "lastMessage": "I'm thinking about making a move to the buy side", "context": "Consulting to finance pivot — deliver relevant list", "sentiment": "positive", "assetSegment": "strategy-consulting" },
+    { "stage": "close", "seniority": "associate", "lead": { "name": "Sebastian Vogel", "role": "Associate at KKR", "company": "KKR", "location": "London", "background": "Ready to book call" }, "lastMessage": "Let's set up a time to chat", "context": "Ready for call — professional_warm tone, send booking link", "sentiment": "buying_signal" },
+    { "stage": "objection", "seniority": "associate", "lead": { "name": "Matteo Bianchi", "role": "Associate at Cinven", "company": "Cinven", "location": "Milan", "background": "Already has good network" }, "lastMessage": "I have a good network already, not sure what value you'd add", "context": "Has strong network — differentiate via unadvertised roles", "sentiment": "negative", "nextObjection": "has_network" },
+    { "stage": "objection", "seniority": "associate", "lead": { "name": "Anika Schmidt", "role": "Associate at Advent International", "company": "Advent", "location": "Frankfurt", "background": "Time-constrained" }, "lastMessage": "I'm drowning in work, can't think about this right now", "context": "Too busy — reassure it's low-effort", "sentiment": "neutral", "nextObjection": "time_commitment" },
+    { "stage": "follow_up", "seniority": "associate", "lead": { "name": "Thomas Laurent", "role": "Associate at Eurazeo", "company": "Eurazeo", "location": "Paris", "background": "No reply after 1 week" }, "lastMessage": null, "context": "Silent — one nudge", "sentiment": "neutral" },
+
+    { "stage": "cold_opener", "seniority": "vp_director", "lead": { "name": "Henrik Johansson", "role": "Vice President at Blackstone", "company": "Blackstone", "location": "London", "background": "Senior VP, values discretion" }, "lastMessage": null, "context": "First outreach — senior VP, discreet tone only", "sentiment": "neutral" },
+    { "stage": "cold_opener", "seniority": "vp_director", "lead": { "name": "Isabel Martinez", "role": "Director at Apollo", "company": "Apollo", "location": "London", "background": "Senior-level, passive" }, "lastMessage": null, "context": "First outreach — director, minimal intrusion", "sentiment": "neutral" },
+    { "stage": "value_pitch", "seniority": "vp_director", "lead": { "name": "Gustav Lindberg", "role": "VP at Nordic Capital", "company": "Nordic Capital", "location": "Stockholm", "background": "Open to right opportunity" }, "lastMessage": "Depends on the opportunity — what are we talking about?", "context": "Gated interest — respectful, lead with quality not quantity", "sentiment": "curious", "assetSegment": "general" },
+    { "stage": "close", "seniority": "vp_director", "lead": { "name": "Pascal Girard", "role": "VP at Ardian", "company": "Ardian", "location": "Paris", "background": "Wants call" }, "lastMessage": "Let's have a brief call", "context": "Ready for call — concise, send booking link", "sentiment": "buying_signal" },
+    { "stage": "objection", "seniority": "vp_director", "lead": { "name": "Rebecca Stein", "role": "Director at Carlyle", "company": "Carlyle", "location": "London", "background": "Not actively looking" }, "lastMessage": "I'm not in the market right now but happy to stay in touch", "context": "Passive senior — keep warm, don't push", "sentiment": "neutral", "nextObjection": "not_looking" },
+    { "stage": "objection", "seniority": "vp_director", "lead": { "name": "Dmitri Volkov", "role": "VP at TPG", "company": "TPG", "location": "London", "background": "Values extreme discretion" }, "lastMessage": "My name cannot appear anywhere", "context": "Discretion critical — reassure confidentiality", "sentiment": "neutral", "nextObjection": "confidentiality" },
+    { "stage": "follow_up", "seniority": "vp_director", "lead": { "name": "Catherine Lee", "role": "Director at Warburg Pincus", "company": "Warburg Pincus", "location": "London", "background": "No reply in 2 weeks" }, "lastMessage": null, "context": "Silent senior — minimal, respectful follow-up", "sentiment": "neutral" },
+
+    { "stage": "cold_opener", "seniority": "senior_exec", "lead": { "name": "Olaf Eriksson", "role": "Managing Director at Goldman Sachs", "company": "Goldman Sachs", "location": "London", "background": "Senior MD, extremely busy" }, "lastMessage": null, "context": "First outreach — MD, must be value-dense in one line", "sentiment": "neutral" },
+    { "stage": "cold_opener", "seniority": "senior_exec", "lead": { "name": "Marguerite Fontaine", "role": "Partner at Rothschild", "company": "Rothschild", "location": "Paris", "background": "Partner-level" }, "lastMessage": null, "context": "First outreach — partner, respectful_concise tone", "sentiment": "neutral" },
+    { "stage": "value_pitch", "seniority": "senior_exec", "lead": { "name": "Klaus Fischer", "role": "Head of M&A at UBS", "company": "UBS", "location": "Zurich", "background": "Open to exceptional opportunities only" }, "lastMessage": "Only if it's something genuinely differentiated", "context": "Highly selective — single-line value prop, no fluff", "sentiment": "curious", "assetSegment": "general" },
+    { "stage": "close", "seniority": "senior_exec", "lead": { "name": "Alexandra Thorne", "role": "Managing Director at Lazard", "company": "Lazard", "location": "London", "background": "Ready to engage" }, "lastMessage": "Send me the details", "context": "Ready — send enterprise info, no call yet", "sentiment": "buying_signal" },
+    { "stage": "objection", "seniority": "senior_exec", "lead": { "name": "Jean-Paul Dubois", "role": "Partner at BC Partners", "company": "BC Partners", "location": "London", "background": "Unimpressed" }, "lastMessage": "I get these emails every day, why are you different?", "context": "Needs sharp differentiation in one sentence", "sentiment": "negative", "nextObjection": "has_alternative" },
+    { "stage": "objection", "seniority": "senior_exec", "lead": { "name": "Carlotta De Luca", "role": "Managing Partner at Clessidra", "company": "Clessidra", "location": "Milan", "background": "Privacy paramount" }, "lastMessage": "Is this confidential?", "context": "Confidentiality top concern for partner-level", "sentiment": "neutral", "nextObjection": "confidentiality" },
+    { "stage": "follow_up", "seniority": "senior_exec", "lead": { "name": "Rajiv Menon", "role": "Managing Director at Standard Chartered", "company": "Standard Chartered", "location": "London", "background": "No reply — very busy" }, "lastMessage": null, "context": "Silent senior exec — single-line, value-dense nudge", "sentiment": "neutral" }
+
+  ]
+}
