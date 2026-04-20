@@ -7,6 +7,7 @@
     "start": "node src/server.js",
     "dev": "nodemon src/server.js",
     "build": "cd dashboard && npm install && npm run build",
+    "postinstall": "cd dashboard && npm install && npm run build",
     "test": "node src/test-routing.js"
   },
   "dependencies": {
