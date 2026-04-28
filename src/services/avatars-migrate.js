@@ -6,7 +6,7 @@
 const Anthropic = require('@anthropic-ai/sdk');
 const store     = require('./store');
 const workspace = require('./workspace');
-const { axes, makeAvatarId } = require('./avatars');
+const { axes, makeAvatarId, isMessageRecord } = require('./avatars');
 
 const HAIKU = 'claude-haiku-4-5-20251001';
 const BATCH_SIZE = 12;
@@ -96,7 +96,9 @@ async function runMigration(workspaceId, opts = {}) {
   if (cur?.running) return { error: 'Migration already running for this workspace' };
 
   const all = store.getTrainingPreferences(wsId);
-  const candidates = all.filter(p => p.airtableId && (reclassify || !p.avatar));
+  // Only classify message-bearing records (skip SENTIMENT / ROUTING / empty drafts —
+  // they're classifier outputs, not training examples, and have nothing to teach the matrix).
+  const candidates = all.filter(p => p.airtableId && isMessageRecord(p) && (reclassify || !p.avatar));
   const status = {
     running: true, total: candidates.length, processed: 0, tagged: 0, failed: 0,
     startedAt: new Date().toISOString(), finishedAt: null,
