@@ -97,6 +97,10 @@ export const api = {
   getTrainingFilters: () => request('/api/training/filters'),
   getTargetedScenario: (seniority, stage) => request(`/api/training/targeted?${seniority ? `seniority=${seniority}` : ''}${seniority && stage ? '&' : ''}${stage ? `stage=${stage}` : ''}`),
   saveAnnotation: (data) => request('/api/training/annotate', { method: 'POST', body: data }),
+  // Machine-portability safety net: how many records are sitting locally and
+  // not yet in Airtable, and a one-click endpoint to push them.
+  getTrainingSyncStatus: () => request('/api/training/sync-status'),
+  forceResyncTraining: () => request('/api/training/force-resync', { method: 'POST', body: {} }),
   simulationStart: (seniority, stage) => request('/api/training/simulation/start', { method: 'POST', body: { seniority, stage } }),
   simulationStep: (lead, seniority, thread) => request('/api/training/simulation/step', { method: 'POST', body: { lead, seniority, thread } }),
   simulationGhost: (lead, seniority, thread) => request('/api/training/simulation/ghost', { method: 'POST', body: { lead, seniority, thread } }),
