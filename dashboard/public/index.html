@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>LinkedIn Distribution</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet" />
+    <style>
+      * { box-sizing: border-box; }
+      body { margin: 0; font-family: 'IBM Plex Sans', system-ui, -apple-system, sans-serif; background: #FAF9F7; }
+      #root { height: 100vh; }
+      :root {
+        --if-orange: #E8734A;
+        --if-orange-light: #FDF0EB;
+        --if-orange-mid: #F5A882;
+        --if-orange-dark: #C4542E;
+        --if-bg: #FAF9F7;
+        --if-card: #FFFFFF;
+        --if-border: rgba(0,0,0,0.08);
+        --if-text: #1A1A1A;
+        --if-text-secondary: #6B6B6B;
+        --if-text-tertiary: #9E9E9E;
+      }
+
+      /* --- Responsive overrides --------------------------------------------
+         Inline styles win unless we use !important. Each utility below maps
+         to an inline-style pattern used in App.js so panels adapt below ~900px
+         and stack on phones (<600px). Apply by adding the class to the same
+         element that has the inline style — see App.js. */
+
+      /* Tabs row that should scroll horizontally rather than wrap on narrow screens */
+      .if-tabs-row { overflow-x: auto; }
+      .if-tabs-row::-webkit-scrollbar { height: 4px; }
+      .if-tabs-row::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.15); border-radius: 2px; }
+
+      /* Tooltip-on-hover icon for inline help next to badges/labels */
+      .if-info-dot {
+        display: inline-flex; align-items: center; justify-content: center;
+        width: 14px; height: 14px; border-radius: 50%;
+        background: rgba(0,0,0,0.06); color: #6B6B6B;
+        font-size: 9px; font-weight: 700; cursor: help;
+        margin-left: 4px; user-select: none;
+        font-family: 'IBM Plex Sans', system-ui, sans-serif;
+      }
+      .if-info-dot:hover { background: var(--if-orange-light); color: var(--if-orange-dark); }
+
+      /* The scenario guide card — a soft-tinted explainer block */
+      .if-scenario-guide {
+        background: linear-gradient(180deg, #FFFCF7, #FAF7F0);
+        border: 1px solid #ECE4D7;
+        border-left: 3px solid var(--if-orange);
+        border-radius: 10px;
+        padding: 12px 14px;
+        margin-bottom: 14px;
+        font-size: 12.5px;
+        line-height: 1.5;
+        color: #3A3A3A;
+      }
+      .if-scenario-guide strong { color: #1A1A1A; }
+      .if-scenario-guide .if-guide-row { margin-top: 6px; }
+      .if-scenario-guide .if-guide-row em { color: #6B6B6B; font-style: normal; font-weight: 500; }
+
+      @media (max-width: 1100px) {
+        .if-grid-5 { grid-template-columns: repeat(3, 1fr) !important; }
+        .if-grid-4 { grid-template-columns: repeat(2, 1fr) !important; }
+        .if-sidebar { width: 180px !important; }
+      }
+
+      @media (max-width: 900px) {
+        .if-grid-5 { grid-template-columns: repeat(2, 1fr) !important; }
+        .if-grid-4 { grid-template-columns: repeat(2, 1fr) !important; }
+        .if-grid-3 { grid-template-columns: 1fr !important; }
+        .if-grid-2 { grid-template-columns: 1fr !important; }
+        .if-sidebar { width: 168px !important; }
+        .if-row-2col { flex-direction: column !important; }
+        .if-row-2col > * { width: 100% !important; flex: 1 1 100% !important; }
+        .if-tabs-row { flex-wrap: nowrap !important; }
+        .if-inbox-list { width: 240px !important; }
+        .if-training-panel { padding: 16px !important; max-width: 100% !important; }
+      }
+
+      @media (max-width: 720px) {
+        .if-grid-5, .if-grid-4 { grid-template-columns: 1fr !important; }
+        .if-app { flex-direction: column !important; }
+        .if-sidebar {
+          width: 100% !important;
+          flex-direction: row !important;
+          overflow-x: auto !important;
+          border-right: none !important;
+          border-bottom: 1px solid var(--if-border);
+          box-shadow: 0 1px 4px rgba(0,0,0,0.04) !important;
+        }
+        .if-sidebar-header { flex-shrink: 0; min-width: 200px; border-bottom: none !important; border-right: 1px solid var(--if-border); }
+        .if-sidebar-nav { display: flex !important; flex-direction: row !important; flex: 1; overflow-x: auto; }
+        .if-sidebar-nav > div { white-space: nowrap; border-left: none !important; border-bottom: 3px solid transparent; border-radius: 0 !important; }
+        .if-sidebar-nav > div.if-active { border-bottom: 3px solid var(--if-orange) !important; }
+        .if-sidebar-footer { display: none !important; }
+        .if-inbox-split { flex-direction: column !important; }
+        .if-inbox-list { width: 100% !important; max-height: 200px; border-right: none !important; border-bottom: 1px solid rgba(0,0,0,0.06); }
+        .if-training-panel { padding: 12px !important; }
+        .if-tabs-stats { flex-wrap: wrap !important; }
+        .if-tabs-stats > div { flex: 1 1 30% !important; min-width: 80px; }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+  </body>
+</html>
