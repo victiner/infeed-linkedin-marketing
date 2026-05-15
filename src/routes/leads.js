@@ -167,17 +167,35 @@ router.post('/:id/notes/extract', async (req, res) => {
 
 // POST /leads/import — manually import a lead and optionally send cold opener
 router.post('/import', async (req, res) => {
-  const { linkedInUrl, name, role, company, sendColdOpener, senderId } = req.body;
+  const {
+    linkedInUrl, name, role, company, sendColdOpener, senderId,
+    // Sales-Nav-style enrichment fields. All optional. Stored on the lead's
+    // notes blob and read by the job-list matcher + Claude prompt placeholders.
+    industry, location, seniority, about, headline, tags,
+  } = req.body;
   if (!linkedInUrl || !name) return res.status(400).json({ error: 'linkedInUrl and name are required' });
 
   try {
     // Resolve sender ID — use provided, or skip (cold opener won't send without one)
     let resolvedSenderId = senderId || process.env.HEYREACH_DEFAULT_SENDER_ID || '';
 
+    // Pack enrichment fields into the notes blob. The matcher reads
+    // notes.industry / notes.location / notes.seniority (in addition to the
+    // top-level lead fields) so this is the persistence path that doesn't
+    // require an Airtable schema change.
+    const enrichmentNotes = {};
+    if (industry)  enrichmentNotes.industry  = industry;
+    if (location)  enrichmentNotes.location  = location;
+    if (seniority) enrichmentNotes.seniority = seniority;
+    const aboutCombined = [headline, about].filter(Boolean).join(headline && about ? ' — ' : '');
+
     // Create lead
     const lead = store.upsertLead({
       linkedInUrl, name, role: role || '', company: company || '',
-      senderId: resolvedSenderId || '', tags: []
+      senderId: resolvedSenderId || '',
+      tags: Array.isArray(tags) ? tags : [],
+      notes: enrichmentNotes,
+      about: aboutCombined,
     });
 
     // Assign to an active campaign if one exists
