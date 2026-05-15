@@ -74,15 +74,31 @@ async function sendMessage({ senderId, conversationId, message }) {
   return res.data;
 }
 
-// Add a lead to a campaign
-async function addLeadToCampaign({ campaignId, linkedInProfileUrl, customFields = {} }) {
-  const res = await axios.post(`${BASE_URL}/campaign/AddLeads`, {
-    campaignId,
+// Add a lead to a campaign.
+// HeyReach's /campaign/AddLeads requires:
+//   - campaignId as integer
+//   - accountIds: array of LinkedIn account (sender) IDs to use — without
+//     this, HeyReach has no idea which sender should reach this lead and
+//     responds 404 (silently)
+//   - leads[].customFields as an array of { name, value } objects (NOT a
+//     plain {key: value} map)
+async function addLeadToCampaign({ campaignId, accountIds = [], linkedInProfileUrl, customFields = {} }) {
+  const customFieldsArray = Object.entries(customFields || {})
+    .filter(([_, v]) => v !== undefined && v !== null && v !== '')
+    .map(([name, value]) => ({ name, value: String(value) }));
+
+  const body = {
+    campaignId: parseInt(campaignId, 10) || campaignId,
+    accountIds: (Array.isArray(accountIds) ? accountIds : [accountIds])
+      .filter(Boolean)
+      .map(id => parseInt(id, 10) || id),
     leads: [{
       linkedInProfileUrl,
-      customFields
-    }]
-  }, { headers: headers() });
+      customUserFields: customFieldsArray,
+    }],
+  };
+
+  const res = await axios.post(`${BASE_URL}/campaign/AddLeadsV2`, body, { headers: headers() });
   return res.data;
 }
 
