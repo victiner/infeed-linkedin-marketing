@@ -32,6 +32,14 @@ router.patch('/:id', (req, res) => {
   res.json({ lead: store.getLead(req.params.id) });
 });
 
+// DELETE /leads/:id — remove lead and cascade to its conversations.
+// Best-effort Airtable cleanup; in-memory delete always succeeds if the lead exists.
+router.delete('/:id', async (req, res) => {
+  const result = await store.deleteLead(req.params.id);
+  if (!result.deleted) return res.status(404).json({ error: 'Lead not found' });
+  res.json(result);
+});
+
 // POST /leads/:id/use-credit — record that one application was handled
 router.post('/:id/use-credit', (req, res) => {
   const lead = store.useCredit(req.params.id);
@@ -246,29 +254,59 @@ router.post('/import', async (req, res) => {
       });
       const storedDraft = convoWithDraft.drafts[convoWithDraft.drafts.length - 1];
 
-      // Send via HeyReach
+      // Send via HeyReach campaign — adds the lead to a pre-configured HeyReach
+      // campaign with the Claude-drafted message as a custom field. HeyReach then
+      // schedules the actual LinkedIn send within its own daily-limit window
+      // (more controlled than direct sendMessage, and respects HeyReach's
+      // connection-request → message flow). The HeyReach campaign template
+      // must reference {{customField.message}} for the personalized text.
+      const heyReachCampaignId = process.env.HEYREACH_DEFAULT_CAMPAIGN_ID;
+      if (!heyReachCampaignId) {
+        console.error('[Import] HEYREACH_DEFAULT_CAMPAIGN_ID not set — draft created but cannot queue in HeyReach.');
+        store.logAction({
+          type: 'draft_created', leadId: lead.id, conversationId: convoId,
+          data: { routing: 'cold_opener', sendFailed: true, error: 'HEYREACH_DEFAULT_CAMPAIGN_ID env var not set', source: 'import' },
+          result: 'draft_ready_config_missing',
+        });
+        return res.json({
+          success: true, lead, draft: draftText, sent: false, conversationId: convoId,
+          error: 'HEYREACH_DEFAULT_CAMPAIGN_ID env var not set on Railway. Draft created but not queued.',
+        });
+      }
+
       try {
-        const delayMs = Math.floor(Math.random() * 10_000); // shorter delay for imports
-        await new Promise(r => setTimeout(r, delayMs));
-        await heyreach.sendMessage({ senderId: resolvedSenderId, conversationId: convoId, message: draftText });
+        await heyreach.addLeadToCampaign({
+          campaignId: heyReachCampaignId,
+          linkedInProfileUrl: lead.linkedInUrl,
+          customFields: {
+            message:    draftText,
+            first_name: (lead.name || '').split(' ')[0],
+            full_name:  lead.name    || '',
+            company:    lead.company || '',
+            role:       lead.role    || '',
+            industry:   lead.notes?.industry  || '',
+            location:   lead.notes?.location  || '',
+            seniority:  lead.notes?.seniority || '',
+          },
+        });
         store.markDraftSent(convoId, storedDraft.id);
         store.logAction({
-          type: 'message_sent', leadId: lead.id, conversationId: convoId,
-          data: { routing: 'cold_opener', stage: 'cold', autoSent: true, source: 'import' },
-          result: 'sent'
+          type: 'message_queued', leadId: lead.id, conversationId: convoId,
+          data: { routing: 'cold_opener', stage: 'cold', source: 'import', heyReachCampaignId },
+          result: 'queued_in_heyreach',
         });
         if (lead.campaignId) store.advanceLeadStep(lead.id);
         sent = true;
       } catch (err) {
-        console.error(`[Import] Send failed for ${name}:`, err.message);
+        console.error(`[Import] HeyReach campaign add failed for ${name}:`, err.message);
         store.logAction({
           type: 'draft_created', leadId: lead.id, conversationId: convoId,
-          data: { routing: 'cold_opener', sendFailed: true, error: err.message, source: 'import' },
-          result: 'draft_ready'
+          data: { routing: 'cold_opener', sendFailed: true, error: err.message, source: 'import', heyReachCampaignId },
+          result: 'draft_ready',
         });
       }
 
-      res.json({ success: true, lead, draft: draftText, sent, conversationId: convoId });
+      res.json({ success: true, lead, draft: draftText, sent, queued: sent, conversationId: convoId });
     } else {
       res.json({ success: true, lead, sent: false });
     }
