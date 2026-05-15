@@ -75,30 +75,32 @@ async function sendMessage({ senderId, conversationId, message }) {
 }
 
 // Add a lead to a campaign.
-// HeyReach's /campaign/AddLeads requires:
-//   - campaignId as integer
-//   - accountIds: array of LinkedIn account (sender) IDs to use — without
-//     this, HeyReach has no idea which sender should reach this lead and
-//     responds 404 (silently)
-//   - leads[].customFields as an array of { name, value } objects (NOT a
-//     plain {key: value} map)
+// Verified via probe against HeyReach's live API on 2026-05-15:
+//   - Endpoint: POST /api/public/campaign/AddLeadsToCampaign
+//   - Body: { campaignId, accountLeadPairs: [{ linkedInAccountId, lead: { linkedInProfileUrl, customUserFields: [{name, value}] } }] }
+// Earlier endpoints (/campaign/AddLeads, /campaign/AddLeadsV2) all return 404
+// for valid keys — they're not on this account's tier.
 async function addLeadToCampaign({ campaignId, accountIds = [], linkedInProfileUrl, customFields = {} }) {
-  const customFieldsArray = Object.entries(customFields || {})
+  const customUserFields = Object.entries(customFields || {})
     .filter(([_, v]) => v !== undefined && v !== null && v !== '')
     .map(([name, value]) => ({ name, value: String(value) }));
 
+  const senderIds = (Array.isArray(accountIds) ? accountIds : [accountIds])
+    .filter(Boolean)
+    .map(id => parseInt(id, 10) || id);
+
+  // One pair per sender — typically a single sender per lead.
+  const accountLeadPairs = senderIds.map(linkedInAccountId => ({
+    linkedInAccountId,
+    lead: { linkedInProfileUrl, customUserFields },
+  }));
+
   const body = {
     campaignId: parseInt(campaignId, 10) || campaignId,
-    accountIds: (Array.isArray(accountIds) ? accountIds : [accountIds])
-      .filter(Boolean)
-      .map(id => parseInt(id, 10) || id),
-    leads: [{
-      linkedInProfileUrl,
-      customUserFields: customFieldsArray,
-    }],
+    accountLeadPairs,
   };
 
-  const res = await axios.post(`${BASE_URL}/campaign/AddLeadsV2`, body, { headers: headers() });
+  const res = await axios.post(`${BASE_URL}/campaign/AddLeadsToCampaign`, body, { headers: headers() });
   return res.data;
 }
 
