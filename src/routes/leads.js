@@ -274,6 +274,11 @@ router.post('/import', async (req, res) => {
         });
       }
 
+      // Capture error so we can surface the actual HeyReach failure to the
+      // dashboard — silent failures during cold-opener send are too easy to
+      // miss (was a real footgun: dashboard showed nothing, real error in
+      // Railway logs).
+      let heyReachError = null;
       try {
         await heyreach.addLeadToCampaign({
           campaignId: heyReachCampaignId,
@@ -298,15 +303,20 @@ router.post('/import', async (req, res) => {
         if (lead.campaignId) store.advanceLeadStep(lead.id);
         sent = true;
       } catch (err) {
-        console.error(`[Import] HeyReach campaign add failed for ${name}:`, err.message);
+        // axios errors carry the HeyReach response under err.response.data —
+        // include both for diagnosis.
+        const apiBody = err?.response?.data;
+        const status  = err?.response?.status;
+        heyReachError = `HeyReach ${status || ''} ${err.message}${apiBody ? ' — ' + JSON.stringify(apiBody).slice(0, 300) : ''}`.trim();
+        console.error(`[Import] HeyReach campaign add failed for ${name}:`, heyReachError);
         store.logAction({
           type: 'draft_created', leadId: lead.id, conversationId: convoId,
-          data: { routing: 'cold_opener', sendFailed: true, error: err.message, source: 'import', heyReachCampaignId },
+          data: { routing: 'cold_opener', sendFailed: true, error: heyReachError, source: 'import', heyReachCampaignId },
           result: 'draft_ready',
         });
       }
 
-      res.json({ success: true, lead, draft: draftText, sent, queued: sent, conversationId: convoId });
+      res.json({ success: true, lead, draft: draftText, sent, queued: sent, conversationId: convoId, error: heyReachError || undefined });
     } else {
       res.json({ success: true, lead, sent: false });
     }
