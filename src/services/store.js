@@ -455,6 +455,43 @@ function getLead(leadId) {
   return leads.get(leadId) || null;
 }
 
+// Delete a lead and cascade to its conversations. Removes from in-memory maps
+// and (best-effort) from Airtable. Returns a summary of what was deleted.
+async function deleteLead(leadId) {
+  const lead = leads.get(leadId);
+  if (!lead) return { deleted: false, reason: 'not_found' };
+
+  const relatedConvos = [...conversations.values()].filter(c => c.leadId === leadId);
+  const b = getBase();
+
+  // Best-effort Airtable cleanup — failures shouldn't block the in-memory delete.
+  for (const convo of relatedConvos) {
+    const recId = atIds.conversations.get(convo.id);
+    if (b && recId) {
+      try { await b(TABLES.conversations).destroy(recId); }
+      catch (err) { console.warn(`[Store] Airtable convo destroy failed for ${convo.id}:`, err.message); }
+    }
+    atIds.conversations.delete(convo.id);
+    conversations.delete(convo.id);
+  }
+
+  const leadRecId = atIds.leads.get(leadId);
+  if (b && leadRecId) {
+    try { await b(TABLES.leads).destroy(leadRecId); }
+    catch (err) { console.warn(`[Store] Airtable lead destroy failed for ${leadId}:`, err.message); }
+  }
+  atIds.leads.delete(leadId);
+  leads.delete(leadId);
+
+  logAction({
+    type: 'lead_deleted', leadId,
+    data: { name: lead.name, linkedInUrl: lead.linkedInUrl, conversationsRemoved: relatedConvos.length },
+    result: 'deleted',
+  });
+
+  return { deleted: true, leadId, conversationsRemoved: relatedConvos.length };
+}
+
 function getAllLeads(workspaceId) {
   let all = [...leads.values()];
   if (workspaceId) all = all.filter(l => l.workspaceId === workspaceId);
@@ -1072,6 +1109,7 @@ module.exports = {
   getLeadByUrl,
   getLead,
   getAllLeads,
+  deleteLead,
   assignLeadToCampaign,
   advanceLeadStep,
   getLeadsInCampaign,
