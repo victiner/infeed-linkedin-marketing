@@ -122,15 +122,25 @@ async function addLeadToList({ listId, profileUrl, firstName, lastName, companyN
 
 // Backwards-compat alias — routes/leads.js still calls addLeadToCampaign.
 // Maps the campaign-style invocation onto the list-based reality.
+// HeyReach silently rejects (returns 0) when leads are added without name
+// fields — even if profileUrl is valid — so we derive firstName/lastName/
+// companyName from the customFields the caller already populates.
 async function addLeadToCampaign({ campaignId, listId, accountIds = [], linkedInProfileUrl, customFields = {} }) {
-  // listId param wins; otherwise fall back to env var.
   const targetListId = listId || process.env.HEYREACH_DEFAULT_LIST_ID;
   if (!targetListId) {
     throw new Error('HEYREACH_DEFAULT_LIST_ID env var not set (the lead list ID bound to your HeyReach campaign).');
   }
+
+  const cf = customFields || {};
+  const fullName  = (cf.full_name || cf.name || '').trim();
+  const firstName = (cf.first_name || fullName.split(' ')[0] || '').trim();
+  const lastName  = (cf.last_name  || fullName.split(' ').slice(1).join(' ') || '').trim();
+  const companyName = (cf.company || cf.company_name || '').trim();
+
   return addLeadToList({
     listId: targetListId,
     profileUrl: linkedInProfileUrl,
+    firstName, lastName, companyName,
     customFields,
   });
 }
