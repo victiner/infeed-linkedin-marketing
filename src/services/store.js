@@ -362,11 +362,24 @@ async function init() {
 
 // ---- LEAD OPERATIONS ----
 
-function upsertLead({ linkedInUrl, name, role, company, senderId, tags = [] }) {
+function upsertLead({ linkedInUrl, name, role, company, senderId, tags = [], notes = {}, about = '' }) {
+  // Build the patch of notes additions: explicit notes object plus any free-text
+  // about/headline fields. Empty values are dropped so they don't overwrite
+  // existing notes with blanks.
+  const notesPatch = { ...(notes || {}) };
+  if (about) notesPatch.about = about;
+  Object.keys(notesPatch).forEach(k => {
+    if (notesPatch[k] === '' || notesPatch[k] == null) delete notesPatch[k];
+  });
+
   const existing = [...leads.values()].find(l => l.linkedInUrl === linkedInUrl);
   if (existing) {
     Object.assign(existing, { name, role, company, updatedAt: new Date().toISOString() });
     if (tags.length) existing.tags = [...new Set([...existing.tags, ...tags])];
+    if (Object.keys(notesPatch).length) {
+      existing.notes = { ...(existing.notes || {}), ...notesPatch };
+      existing.notesUpdatedAt = new Date().toISOString();
+    }
     leads.set(existing.id, existing);
     syncLead(existing);
     return existing;
@@ -396,8 +409,8 @@ function upsertLead({ linkedInUrl, name, role, company, senderId, tags = [] }) {
     campaignId:          null,
     currentStepIndex:    0,
     lastStepAt:          null,
-    notes:               {},
-    notesUpdatedAt:      null,
+    notes:               notesPatch,
+    notesUpdatedAt:      Object.keys(notesPatch).length ? new Date().toISOString() : null,
     createdAt:           new Date().toISOString(),
     updatedAt:           new Date().toISOString(),
   };

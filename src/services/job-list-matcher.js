@@ -97,11 +97,14 @@ function scoreJobList(jl, target) {
 }
 
 // Build target criteria from a lead (profile + notes).
+// Reads from notes first (where Sales-Nav-style imports populate fields), then
+// falls back to top-level lead fields. Each axis accepts multiple key names so
+// imports don't need to know the canonical key.
 function buildTarget(lead, notes) {
   return {
-    industry:   notes?.interest_track     || lead?.industry || lead?.segment   || '',
-    geography:  notes?.target_geography   || lead?.location || '',
-    experience: lead?.seniority           || '',
+    industry:   notes?.interest_track     || notes?.industry  || lead?.industry  || lead?.segment || '',
+    geography:  notes?.target_geography   || notes?.location  || lead?.location  || '',
+    experience: notes?.seniority          || lead?.seniority  || '',
   };
 }
 
