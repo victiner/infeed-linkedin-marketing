@@ -74,34 +74,65 @@ async function sendMessage({ senderId, conversationId, message }) {
   return res.data;
 }
 
-// Add a lead to a campaign.
-// Verified via probe against HeyReach's live API on 2026-05-15:
-//   - Endpoint: POST /api/public/campaign/AddLeadsToCampaign
-//   - Body: { campaignId, accountLeadPairs: [{ linkedInAccountId, lead: { linkedInProfileUrl, customUserFields: [{name, value}] } }] }
-// Earlier endpoints (/campaign/AddLeads, /campaign/AddLeadsV2) all return 404
-// for valid keys — they're not on this account's tier.
-async function addLeadToCampaign({ campaignId, accountIds = [], linkedInProfileUrl, customFields = {} }) {
+// Queue a lead in a HeyReach campaign by adding to the lead list bound to it.
+// VERIFIED via direct API probes against HeyReach 2026-05-15.
+//
+// HeyReach data model:
+//   Lead List (id 608000, "Test")  ← leads live here
+//        ↑ bound to ↓
+//   Campaign (id 431707, "Test V1") ← processes leads from its list
+//
+// Adding via campaign/AddLeadsToCampaign returned "0" (silent reject).
+// The working path is list/AddLeadsToList:
+//   - field name is `profileUrl` (not linkedInProfileUrl — silent reject)
+//   - customUserFields: [{name, value}] is supported and substituted in the
+//     campaign's message template via {{name}} placeholders.
+//
+// `listId` should match the lead list bound to the campaign you want to use.
+// In env: set HEYREACH_DEFAULT_LIST_ID to that list's numeric ID.
+async function addLeadToList({ listId, profileUrl, firstName, lastName, companyName, customFields = {} }) {
   const customUserFields = Object.entries(customFields || {})
     .filter(([_, v]) => v !== undefined && v !== null && v !== '')
     .map(([name, value]) => ({ name, value: String(value) }));
 
-  const senderIds = (Array.isArray(accountIds) ? accountIds : [accountIds])
-    .filter(Boolean)
-    .map(id => parseInt(id, 10) || id);
-
-  // One pair per sender — typically a single sender per lead.
-  const accountLeadPairs = senderIds.map(linkedInAccountId => ({
-    linkedInAccountId,
-    lead: { linkedInProfileUrl, customUserFields },
-  }));
-
-  const body = {
-    campaignId: parseInt(campaignId, 10) || campaignId,
-    accountLeadPairs,
+  const lead = {
+    profileUrl,
+    ...(firstName   ? { firstName }   : {}),
+    ...(lastName    ? { lastName }    : {}),
+    ...(companyName ? { companyName } : {}),
+    ...(customUserFields.length ? { customUserFields } : {}),
   };
 
-  const res = await axios.post(`${BASE_URL}/campaign/AddLeadsToCampaign`, body, { headers: headers() });
-  return res.data;
+  const body = {
+    listId: parseInt(listId, 10) || listId,
+    leads: [lead],
+  };
+
+  const res = await axios.post(`${BASE_URL}/list/AddLeadsToList`, body, { headers: headers() });
+  // HeyReach returns the count of leads added (e.g. 1). 0 means silent
+  // rejection — usually because the lead is already in the list (dedup) or
+  // the URL is malformed.
+  if (res.data === 0 || res.data === '0') {
+    const err = new Error('HeyReach silently rejected lead (returned count=0). Likely already in list, dedup, or invalid URL.');
+    err.heyReachCount = 0;
+    throw err;
+  }
+  return { added: typeof res.data === 'number' ? res.data : 1, raw: res.data };
+}
+
+// Backwards-compat alias — routes/leads.js still calls addLeadToCampaign.
+// Maps the campaign-style invocation onto the list-based reality.
+async function addLeadToCampaign({ campaignId, listId, accountIds = [], linkedInProfileUrl, customFields = {} }) {
+  // listId param wins; otherwise fall back to env var.
+  const targetListId = listId || process.env.HEYREACH_DEFAULT_LIST_ID;
+  if (!targetListId) {
+    throw new Error('HEYREACH_DEFAULT_LIST_ID env var not set (the lead list ID bound to your HeyReach campaign).');
+  }
+  return addLeadToList({
+    listId: targetListId,
+    profileUrl: linkedInProfileUrl,
+    customFields,
+  });
 }
 
 // Update tags on a lead
@@ -152,6 +183,7 @@ module.exports = {
   getLeadDetails,
   sendMessage,
   addLeadToCampaign,
+  addLeadToList,
   updateLeadTags,
   getOverallStats,
   getConversationsNeedingReply,
