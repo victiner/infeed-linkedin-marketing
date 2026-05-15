@@ -282,6 +282,10 @@ router.post('/import', async (req, res) => {
       try {
         await heyreach.addLeadToCampaign({
           campaignId: heyReachCampaignId,
+          // accountIds tells HeyReach which sender(s) should reach this lead.
+          // Without it the API silently 404s. Use the resolved sender as a
+          // single-element array.
+          accountIds: resolvedSenderId ? [resolvedSenderId] : [],
           linkedInProfileUrl: lead.linkedInUrl,
           customFields: {
             message:    draftText,
