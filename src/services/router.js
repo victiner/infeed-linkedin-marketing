@@ -66,7 +66,15 @@ async function processInboundMessage(webhookPayload) {
     senderId
   });
 
-  // 2. Get or build conversation thread
+  // 2a. If we created a synthetic `import-${lead.id}` conv when this lead was
+  // imported, fold it into the real HeyReach conversationId now. Cold opener
+  // text + queued draft history get ported over so there's one conv per lead.
+  const synthConv = store.findSyntheticConversationForLead(lead.id);
+  if (synthConv && synthConv.id !== conversationId) {
+    store.mergeConversations(synthConv.id, conversationId, { leadId: lead.id, senderId });
+  }
+
+  // 2b. Get or build conversation thread
   const convoRecord = store.upsertConversation({
     conversationId,
     leadId: lead.id,
@@ -78,7 +86,8 @@ async function processInboundMessage(webhookPayload) {
     }]
   });
 
-  // 3. Fetch full thread from HeyReach for context
+  // 3. Fetch full thread from HeyReach for context. Use replaceMessages so the
+  // queued cold opener gets matched and flipped to 'sent' instead of duplicating.
   let thread = convoRecord.messages;
   try {
     const hrConvo = await heyreach.getConversationById(conversationId);
@@ -88,7 +97,7 @@ async function processInboundMessage(webhookPayload) {
         text: m.text,
         timestamp: m.createdAt
       }));
-      store.upsertConversation({ conversationId, leadId: lead.id, senderId, messages: thread });
+      store.replaceMessages(conversationId, thread);
     }
   } catch (err) {
     console.warn('[Router] Could not fetch full thread from HeyReach, using local:', err.message);
@@ -568,13 +577,17 @@ async function sendProactiveStep(lead) {
 // ---- SHARED: auto-send + advance campaign step ----
 
 async function autoSendAndAdvance({ senderId, senderProfileUrl, senderName, draftText, conversationId, lead, routingDecision, selectedAsset, storedDraft }) {
-  const delayMs = 2000 + Math.floor(Math.random() * 6000);
+  // 60–120s delay after a prospect reply, not the previous 2–8s. Sub-10s reads as a bot.
+  const delayMs = 60_000 + Math.floor(Math.random() * 60_000);
   console.log(`[Router] Auto-sending to ${senderName} in ${Math.round(delayMs / 1000)}s (confidence met threshold)`);
   await new Promise(r => setTimeout(r, delayMs));
 
   try {
     await heyreach.sendMessage({ senderId, conversationId, message: draftText });
     store.markDraftSent(conversationId, storedDraft.id);
+    // Append to messages[] so the dashboard shows the reply immediately. Inbox
+    // sends are near-instant, so we record status='sent' (not 'queued').
+    store.appendOutboundMessage(conversationId, draftText, { status: 'sent' });
     store.updateLeadStage(lead.id, routingDecision.stage, routingDecision, selectedAsset?.id);
     store.logAction({
       type: 'message_sent', leadId: lead.id, conversationId,
@@ -597,6 +610,61 @@ async function autoSendAndAdvance({ senderId, senderProfileUrl, senderName, draf
   }
 }
 
+// ---- THREAD SYNC: pull full HeyReach thread, replace local messages ----
+//
+// Triggered by:
+//   - POST /conversations/:id/sync  (manual button in the dashboard)
+//   - GET  /conversations/:id        (auto-sync, with 30s cache)
+//
+// Handles the synthetic-ID case: if `conversationId` is `import-${leadId}`, we
+// look up the real HeyReach conv via the lead's LinkedIn URL and merge first.
+// Without this, all sync calls on un-replied leads would 404 against HeyReach
+// (the synthetic ID is InFeed-only and never existed on HeyReach's side).
+//
+// Returns { conv, synced, realConvId, reason } so the caller can show the user
+// "synced N messages" or "no HeyReach conv yet — still queued for dispatch".
+async function syncConversationFromHeyReach(conversationId) {
+  let convo = store.getConversation(conversationId);
+  if (!convo) return { conv: null, synced: false, reason: 'not_found' };
+
+  let realConvId = conversationId;
+
+  if (conversationId.startsWith('import-')) {
+    const lead = store.getLead(convo.leadId);
+    if (!lead?.linkedInUrl) {
+      return { conv: convo, synced: false, reason: 'no_lead_url' };
+    }
+    let hrConv;
+    try {
+      hrConv = await heyreach.findConversationForLead(lead.linkedInUrl, { senderId: convo.senderId });
+    } catch (err) {
+      console.warn(`[Sync] HeyReach lookup failed for ${lead.linkedInUrl}:`, err.message);
+      return { conv: convo, synced: false, reason: 'lookup_failed' };
+    }
+    if (!hrConv?.id) {
+      return { conv: convo, synced: false, reason: 'no_heyreach_conv_yet' };
+    }
+    realConvId = hrConv.id;
+    convo = store.mergeConversations(conversationId, realConvId, { leadId: lead.id, senderId: convo.senderId });
+  }
+
+  try {
+    const hrConvo = await heyreach.getConversationById(realConvId);
+    if (hrConvo?.messages?.length) {
+      const messages = hrConvo.messages.map(m => ({
+        sender: m.isOurs ? 'us' : 'them',
+        text: m.text,
+        timestamp: m.createdAt
+      }));
+      convo = store.replaceMessages(realConvId, messages);
+    }
+    return { conv: convo, synced: true, realConvId };
+  } catch (err) {
+    console.warn(`[Sync] getConversationById(${realConvId}) failed:`, err.message);
+    return { conv: convo, synced: false, reason: 'fetch_failed', realConvId };
+  }
+}
+
 // ---- MANUAL: send an approved draft ----
 
 async function sendApprovedDraft({ conversationId, draftId, senderId, linkedInProfileUrl }) {
@@ -608,6 +676,9 @@ async function sendApprovedDraft({ conversationId, draftId, senderId, linkedInPr
 
   const result = await heyreach.sendMessage({ senderId, conversationId, message: draft.text });
   store.markDraftSent(conversationId, draftId);
+  // Append to messages[] so the dashboard shows the message immediately rather
+  // than waiting for the next thread sync to pull it back from HeyReach.
+  store.appendOutboundMessage(conversationId, draft.text, { status: 'sent' });
 
   const lead = store.getLead(convo.leadId);
   if (lead) {
@@ -979,6 +1050,7 @@ async function buildDraftGuidance({
 
 module.exports = {
   processInboundMessage, sendProactiveStep, sendApprovedDraft,
+  syncConversationFromHeyReach,
   scoreTrainingRelevance, inferSegment, classifySeniority, buildLeadProfile,
   buildDraftGuidance,
 };

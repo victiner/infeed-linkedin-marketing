@@ -599,6 +599,158 @@ function getAllConversations(workspaceId) {
   return all.sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
 }
 
+// Append an outbound message to a conversation's messages[] so it shows in the
+// Conversations panel. Dedupes if an identical message was just appended (e.g.
+// a sync race or a retry). `status` is 'queued' (handed to HeyReach, not yet
+// confirmed delivered) or 'sent' (confirmed delivered on the inbox endpoint).
+function appendOutboundMessage(conversationId, text, { status = 'sent', timestamp } = {}) {
+  const convo = conversations.get(conversationId);
+  if (!convo) return null;
+  const ts = timestamp || new Date().toISOString();
+  // Dedupe: skip if an identical 'us' message exists in the last 60s.
+  const sixtySecAgo = Date.now() - 60_000;
+  const exists = convo.messages.some(m =>
+    m.sender === 'us' && m.text === text && new Date(m.timestamp).getTime() > sixtySecAgo
+  );
+  if (exists) return convo;
+  convo.messages.push({ sender: 'us', text, timestamp: ts, status });
+  convo.messages.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+  convo.updatedAt = new Date().toISOString();
+  conversations.set(conversationId, convo);
+  syncConversation(convo);
+  return convo;
+}
+
+// Flip an outbound message's status (e.g. queued → sent) when HeyReach confirms
+// delivery via thread sync. Matches by text + sender, most-recent first.
+function updateOutboundMessageStatus(conversationId, text, newStatus) {
+  const convo = conversations.get(conversationId);
+  if (!convo) return null;
+  for (let i = convo.messages.length - 1; i >= 0; i--) {
+    const m = convo.messages[i];
+    if (m.sender === 'us' && m.text === text) {
+      m.status = newStatus;
+      convo.updatedAt = new Date().toISOString();
+      conversations.set(conversationId, convo);
+      syncConversation(convo);
+      return convo;
+    }
+  }
+  return convo;
+}
+
+// Replace a conversation's messages[] from a HeyReach thread fetch.
+// HeyReach is source of truth for what's been delivered, so any 'us' message
+// it returns is marked 'sent'. Local 'us' messages still in status='queued'
+// (cold opener that HeyReach hasn't dispatched yet) are preserved by text-match
+// so they don't disappear from the UI between import and HeyReach dispatch.
+// Drafts are untouched.
+function replaceMessages(conversationId, messages) {
+  const convo = conversations.get(conversationId);
+  if (!convo) return null;
+
+  // Anything HeyReach returned as 'us' has been delivered.
+  const fromHeyReach = messages.map(m =>
+    m.sender === 'us' ? { ...m, status: 'sent' } : m
+  );
+
+  // Preserve any local queued outbound that HeyReach hasn't sent yet.
+  const hrUsTexts = new Set(messages.filter(m => m.sender === 'us').map(m => m.text));
+  const preservedQueued = convo.messages.filter(m =>
+    m.sender === 'us' && m.status === 'queued' && !hrUsTexts.has(m.text)
+  );
+
+  convo.messages = [...fromHeyReach, ...preservedQueued]
+    .sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+  convo.lastSyncedAt = new Date().toISOString();
+  convo.updatedAt = new Date().toISOString();
+  conversations.set(conversationId, convo);
+  syncConversation(convo);
+  return convo;
+}
+
+// Delete a conversation from in-memory + Airtable. Used by the merge logic when
+// a synthetic `import-${leadId}` conv gets absorbed into a real HeyReach conv.
+async function deleteConversation(conversationId) {
+  const convo = conversations.get(conversationId);
+  if (!convo) return false;
+  const b = getBase();
+  const recId = atIds.conversations.get(conversationId);
+  if (b && recId) {
+    try { await b(TABLES.conversations).destroy(recId); }
+    catch (err) { console.warn(`[Store] Airtable convo destroy failed for ${conversationId}:`, err.message); }
+  }
+  atIds.conversations.delete(conversationId);
+  conversations.delete(conversationId);
+  return true;
+}
+
+// Merge a synthetic conversation (e.g. `import-${leadId}`) into a real HeyReach
+// conversation ID. Ports messages (dedupe by sender+text+timestamp) and pending
+// drafts from synth → real, then deletes synth. Idempotent: if the synth doesn't
+// exist, returns the real conv unchanged.
+function mergeConversations(synthId, realId, { leadId, senderId } = {}) {
+  if (synthId === realId) return conversations.get(realId) || null;
+  const synth = conversations.get(synthId);
+  if (!synth) return conversations.get(realId) || null;
+
+  // Ensure the real conv exists, with the synth's messages as a starting point.
+  let real = conversations.get(realId);
+  if (!real) {
+    const wsModule = require('./workspace');
+    real = {
+      id: realId,
+      leadId: leadId || synth.leadId,
+      senderId: senderId || synth.senderId,
+      messages: [...synth.messages],
+      drafts: [...synth.drafts],
+      status: synth.status || 'active',
+      workspaceId: synth.workspaceId || wsModule.getId(),
+      createdAt: synth.createdAt || new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
+    conversations.set(realId, real);
+  } else {
+    // Merge messages with dedupe (sender + text + timestamp window).
+    const existingKeys = new Set(real.messages.map(m => `${m.sender}-${m.text}-${m.timestamp}`));
+    for (const m of synth.messages) {
+      const key = `${m.sender}-${m.text}-${m.timestamp}`;
+      if (!existingKeys.has(key)) real.messages.push(m);
+    }
+    real.messages.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+
+    // Port any pending drafts that haven't been re-issued under the real conv.
+    const realDraftKeys = new Set(real.drafts.map(d => d.text));
+    for (const d of synth.drafts) {
+      if (!realDraftKeys.has(d.text)) real.drafts.push(d);
+    }
+
+    real.updatedAt = new Date().toISOString();
+    conversations.set(realId, real);
+  }
+  syncConversation(real);
+
+  // Cascade actions logged under the synth ID to the real ID so the action log
+  // still reflects the lifecycle from import → reply → send.
+  for (const a of actions) {
+    if (a.conversationId === synthId) a.conversationId = realId;
+  }
+
+  // Best-effort delete of the synth — fire and forget; failure doesn't block.
+  deleteConversation(synthId).catch(err =>
+    console.warn(`[Store] Failed to delete synth conv ${synthId}:`, err.message)
+  );
+
+  console.log(`[Store] Merged conv ${synthId} → ${realId} (${real.messages.length} msgs, ${real.drafts.length} drafts)`);
+  return real;
+}
+
+// Find the most recent synthetic `import-*` conversation for a lead, if any.
+// Used to detect when a real HeyReach conv should absorb a pre-existing synth.
+function findSyntheticConversationForLead(leadId) {
+  return [...conversations.values()].find(c => c.leadId === leadId && c.id.startsWith('import-')) || null;
+}
+
 // ---- CREDIT MANAGEMENT ----
 
 function useCredit(leadId) {
@@ -1118,6 +1270,12 @@ module.exports = {
   markDraftSent,
   getConversation,
   getAllConversations,
+  appendOutboundMessage,
+  updateOutboundMessageStatus,
+  replaceMessages,
+  deleteConversation,
+  mergeConversations,
+  findSyntheticConversationForLead,
   useCredit,
   getCreditStatus,
   logAction,

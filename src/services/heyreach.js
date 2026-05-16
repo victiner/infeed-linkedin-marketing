@@ -56,6 +56,36 @@ async function getConversationById(conversationId) {
   return res.data;
 }
 
+// Find a HeyReach conversation by the lead's LinkedIn profile URL. Used to
+// resolve a synthetic `import-${leadId}` conv → the real HeyReach conv ID once
+// HeyReach has created the thread (post connection-accept, post first dispatch).
+// Searches across statuses since the lead may not have replied yet.
+// Returns the conversation object, or null if no match.
+async function findConversationForLead(linkedInUrl, { senderId = null, maxPages = 5 } = {}) {
+  if (!linkedInUrl) return null;
+  // HeyReach inbox URLs strip trailing slashes / case, so compare loosely.
+  const normalize = (u) => (u || '').toLowerCase().replace(/\/+$/, '').replace(/^https?:\/\//, '');
+  const target = normalize(linkedInUrl);
+
+  for (let page = 1; page <= maxPages; page++) {
+    let batch;
+    try {
+      batch = await getConversations({ page, limit: 50, status: 'ALL', senderId });
+    } catch (err) {
+      console.warn(`[HeyReach] findConversationForLead page ${page} failed:`, err.message);
+      return null;
+    }
+    const items = batch?.items || batch?.conversations || [];
+    if (!items.length) return null;
+    for (const c of items) {
+      const candidate = normalize(c.linkedInProfileUrl || c.leadLinkedInUrl || c.lead?.linkedInUrl || c.profileUrl);
+      if (candidate && candidate === target) return c;
+    }
+    if (items.length < 50) return null;
+  }
+  return null;
+}
+
 // Get detailed lead profile info
 async function getLeadDetails(linkedInProfileUrl) {
   const res = await axios.post(`${BASE_URL}/leads/GetByLinkedInUrl`, {
@@ -190,6 +220,7 @@ module.exports = {
   getCampaigns,
   getConversations,
   getConversationById,
+  findConversationForLead,
   getLeadDetails,
   sendMessage,
   addLeadToCampaign,
