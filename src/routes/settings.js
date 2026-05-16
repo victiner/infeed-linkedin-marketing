@@ -5,6 +5,7 @@ const express = require('express');
 const router = express.Router();
 const settings = require('../services/settings');
 const store    = require('../services/store');
+const db       = require('../db');
 
 // GET /api/settings — current status. Never returns the actual API key value;
 // returns hasAirtableKey + a masked preview so the user can confirm what's
@@ -54,21 +55,34 @@ router.post('/airtable', async (req, res) => {
   });
 });
 
-// POST /api/settings/test-airtable — verify the current credentials actually
-// work, by trying to read one record from the Training table. Useful immediately
-// after a credential update so the user knows the key is valid.
+// POST /api/settings/test-airtable — verify Airtable credentials (legacy name).
+// Kept for backward compat with the dashboard's Settings panel; still tests the
+// Airtable creds since they're only used now for one-time migration.
 router.post('/test-airtable', async (req, res) => {
   if (!process.env.AIRTABLE_API_KEY || !process.env.AIRTABLE_BASE_ID) {
     return res.status(400).json({ ok: false, error: 'No credentials set' });
   }
   try {
-    // Re-import Airtable on the fly to test the current creds
     const Airtable = require('airtable');
     const baseId = (process.env.AIRTABLE_BASE_ID || '').split('/')[0];
     const base = new Airtable({ apiKey: process.env.AIRTABLE_API_KEY }).base(baseId);
     const tableName = process.env.AIRTABLE_TRAINING_TABLE || 'Training';
     await base(tableName).select({ maxRecords: 1 }).firstPage();
     res.json({ ok: true, message: `Connected to base ${baseId}, table ${tableName}` });
+  } catch (err) {
+    res.status(400).json({ ok: false, error: err.message });
+  }
+});
+
+// POST /api/settings/test-db — verify Postgres is reachable. Primary persistence
+// is now Postgres; this is the test you want to run after pasting DATABASE_URL.
+router.post('/test-db', async (req, res) => {
+  if (!db.isConfigured()) {
+    return res.status(400).json({ ok: false, error: 'DATABASE_URL env var not set' });
+  }
+  try {
+    const { rows } = await db.query(`SELECT NOW() AS now, current_database() AS db`);
+    res.json({ ok: true, message: `Connected to ${rows[0].db}`, serverTime: rows[0].now });
   } catch (err) {
     res.status(400).json({ ok: false, error: err.message });
   }
