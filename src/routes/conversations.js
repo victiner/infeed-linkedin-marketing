@@ -4,9 +4,15 @@
 const express = require('express');
 const router = express.Router();
 const store = require('../services/store');
-const { processInboundMessage, sendApprovedDraft } = require('../services/router');
+const { processInboundMessage, sendApprovedDraft, syncConversationFromHeyReach } = require('../services/router');
 const heyreach = require('../services/heyreach');
 const workspace = require('../services/workspace');
+
+// Per-conversation last-sync timestamps so GET /:id can skip a HeyReach round-
+// trip when the conversation was synced in the last 30s. Reduces load when the
+// dashboard polls every 30s anyway.
+const lastAutoSync = new Map();
+const AUTO_SYNC_TTL_MS = 30_000;
 
 // GET /conversations — list all conversations with their latest draft
 router.get('/', (req, res) => {
@@ -26,13 +32,50 @@ router.get('/', (req, res) => {
   res.json({ conversations: enriched, total: enriched.length });
 });
 
-// GET /conversations/:id — single conversation detail
-router.get('/:id', (req, res) => {
-  const convo = store.getConversation(req.params.id);
-  if (!convo) return res.status(404).json({ error: 'Conversation not found' });
+// GET /conversations/:id — single conversation detail.
+// Auto-syncs from HeyReach if last sync >30s ago, so outbound HeyReach activity
+// (campaign step 2, manual sends from LinkedIn, etc.) appears without waiting
+// for the user to click Sync. Sync is fire-and-forget on auto path: we return
+// the current state immediately and the dashboard's 30s poll picks up the
+// refreshed thread on the next load.
+router.get('/:id', async (req, res) => {
+  const convoId = req.params.id;
+  const existing = store.getConversation(convoId);
+  if (!existing) return res.status(404).json({ error: 'Conversation not found' });
 
+  const last = lastAutoSync.get(convoId) || 0;
+  if (Date.now() - last > AUTO_SYNC_TTL_MS) {
+    lastAutoSync.set(convoId, Date.now());
+    syncConversationFromHeyReach(convoId).catch(err =>
+      console.warn(`[Conversations] background sync failed for ${convoId}:`, err.message)
+    );
+  }
+
+  // Return whatever is in the store right now. The background sync above will
+  // update it; the next 30s dashboard poll renders the fresh state.
+  const convo = store.getConversation(convoId);
   const lead = store.getLead(convo.leadId);
   res.json({ conversation: convo, lead });
+});
+
+// POST /conversations/:id/sync — force a HeyReach thread sync now. Resolves
+// synthetic `import-${leadId}` IDs to real HeyReach conv IDs along the way.
+// Used by the dashboard's "Sync from HeyReach" button.
+router.post('/:id/sync', async (req, res) => {
+  try {
+    const result = await syncConversationFromHeyReach(req.params.id);
+    lastAutoSync.set(result.realConvId || req.params.id, Date.now());
+    if (!result.conv) return res.status(404).json({ error: 'Conversation not found' });
+    res.json({
+      success: result.synced,
+      reason: result.reason || null,
+      realConvId: result.realConvId || req.params.id,
+      messageCount: result.conv.messages?.length || 0,
+    });
+  } catch (err) {
+    console.error('[Conversations] Sync error:', err);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // POST /conversations/:id/process — manually trigger routing for a conversation

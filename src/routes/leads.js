@@ -325,6 +325,10 @@ router.post('/import', async (req, res) => {
           },
         });
         store.markDraftSent(convoId, storedDraft.id);
+        // Append to messages[] so the dashboard shows the cold opener immediately.
+        // status='queued' because HeyReach dispatches over minutes-hours; the
+        // thread sync flips this to 'sent' once HeyReach confirms delivery.
+        store.appendOutboundMessage(convoId, draftText, { status: 'queued' });
         store.logAction({
           type: 'message_queued', leadId: lead.id, conversationId: convoId,
           data: { routing: 'cold_opener', stage: 'cold', source: 'import', heyReachCampaignId },
