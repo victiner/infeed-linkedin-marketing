@@ -21,6 +21,7 @@ const { assetsRouter, analyticsRouter, playbookRouter, campaignsRouter } = requi
 const { serveDashboard } = require('./middleware/dashboard');
 const store = require('./services/store');
 const workspace = require('./services/workspace');
+const db = require('./db');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -178,6 +179,7 @@ app.use('/api/voice-dna', require('./routes/voice-dna'));
 app.use('/api/avatars',   require('./routes/avatars'));
 app.use('/api/horizon',   require('./routes/horizon'));
 app.use('/api/settings',  require('./routes/settings'));
+app.use('/api/admin',     require('./routes/admin'));
 
 // ---- DASHBOARD (serves built React app) ----
 serveDashboard(app);
@@ -203,7 +205,16 @@ async function start() {
   const ws = workspace.load(process.env.WORKSPACE_ID);
   console.log(`[Server] Workspace: ${ws.company.name}`);
 
-  // Load persisted data from Airtable
+  // Ensure Postgres schema exists before any read/write. Idempotent — every
+  // statement is CREATE IF NOT EXISTS. No-op if DATABASE_URL is unset.
+  try {
+    await db.initSchema();
+  } catch (err) {
+    console.error('[Server] Schema init failed:', err.message);
+    // Don't exit — the app can run in memory-only mode for emergencies
+  }
+
+  // Load persisted data from Postgres
   await store.init();
   await store.loadTraining();
   await require('./services/voice-dna').loadAll();
