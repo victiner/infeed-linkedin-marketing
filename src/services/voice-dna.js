@@ -1,34 +1,25 @@
 // src/services/voice-dna.js
 // Voice DNA service — extracts learned writing rules from a workspace's training data
-// (corrections / annotations / thumbs / drafts), persists snapshots to Airtable,
+// (corrections / annotations / thumbs / drafts), persists snapshots to Postgres,
 // exposes the current DNA + status, and auto-regenerates as new training arrives.
 //
-// Airtable table (configurable via AIRTABLE_VOICE_DNA_TABLE, default "VoiceDna"):
-//   WorkspaceId, Json, GeneratedAt, BasedOnCount, Model, SourceCounts
+// Postgres table `voice_dna` (auto-created via src/db/schema.sql):
+//   id, workspace_id, dna (jsonb), based_on_count, model, source_counts (jsonb), generated_at
 // Always inserts a new row on regeneration (history retained); the latest by
-// GeneratedAt per workspace is treated as the active DNA.
+// generated_at per workspace is treated as the active DNA.
 
 const Anthropic = require('@anthropic-ai/sdk');
-const Airtable = require('airtable');
+const { v4: uuidv4 } = require('uuid');
+const db = require('../db');
 
-const VOICE_DNA_TABLE = process.env.AIRTABLE_VOICE_DNA_TABLE || 'VoiceDna';
-const BASE_ID         = (process.env.AIRTABLE_BASE_ID || '').split('/')[0];
-const EXTRACT_MODEL   = process.env.EXTRACT_VOICE_MODEL || 'claude-sonnet-4-6';
+const EXTRACT_MODEL = process.env.EXTRACT_VOICE_MODEL || 'claude-sonnet-4-6';
 
 // Auto-regen thresholds
 const MIN_NEW_FOR_BOOTSTRAP = parseInt(process.env.VOICE_DNA_BOOTSTRAP_MIN || '5',  10);
 const MIN_NEW_FOR_REGEN     = parseInt(process.env.VOICE_DNA_REGEN_MIN     || '10', 10);
 const COOLDOWN_MS           = parseInt(process.env.VOICE_DNA_COOLDOWN_MS   || String(5 * 60 * 1000), 10);
 
-let _airtableBase = null;
 let _claude = null;
-
-function getAirtable() {
-  if (_airtableBase) return _airtableBase;
-  if (!process.env.AIRTABLE_API_KEY || !BASE_ID) return null;
-  _airtableBase = new Airtable({ apiKey: process.env.AIRTABLE_API_KEY }).base(BASE_ID);
-  return _airtableBase;
-}
 
 function getClaude() {
   if (_claude) return _claude;
@@ -49,41 +40,34 @@ const MAX_HISTORY = 10;
 // ---- LOADING ----
 
 async function loadAll() {
-  const b = getAirtable();
-  if (!b) {
-    console.log('[VoiceDna] Airtable not configured — service will operate in memory-only mode');
+  if (!db.isConfigured()) {
+    console.log('[VoiceDna] DATABASE_URL not set — service will operate in memory-only mode');
     return;
   }
   try {
-    const records = await b(VOICE_DNA_TABLE).select({
-      maxRecords: 500,
-      sort: [{ field: 'GeneratedAt', direction: 'desc' }]
-    }).all();
-
-    for (const r of records) {
-      const wsId = r.get('WorkspaceId');
+    const { rows } = await db.query(
+      `SELECT * FROM voice_dna ORDER BY workspace_id, generated_at DESC LIMIT 500`
+    );
+    for (const r of rows) {
+      const wsId = r.workspace_id;
       if (!wsId) continue;
-      let dna;          try { dna          = JSON.parse(r.get('Json')         || '{}'); } catch { dna = {}; }
-      let sourceCounts; try { sourceCounts = JSON.parse(r.get('SourceCounts') || '{}'); } catch { sourceCounts = {}; }
       const entry = {
-        dna,
-        generatedAt:  r.get('GeneratedAt') || '',
-        basedOnCount: r.get('BasedOnCount') || 0,
-        model:        r.get('Model')        || '',
-        sourceCounts,
+        dna:          r.dna || {},
+        generatedAt:  r.generated_at ? new Date(r.generated_at).toISOString() : '',
+        basedOnCount: r.based_on_count || 0,
+        model:        r.model || '',
+        sourceCounts: r.source_counts || {},
         recordId:     r.id,
       };
-      // First seen per workspace = latest (records are sorted desc)
+      // First seen per workspace = latest (records are sorted desc within ws)
       if (!cache.has(wsId)) cache.set(wsId, entry);
-      // Track up to MAX_HISTORY entries per workspace
       if (!historyByWs.has(wsId)) historyByWs.set(wsId, []);
       const arr = historyByWs.get(wsId);
       if (arr.length < MAX_HISTORY) arr.push(entry);
     }
     console.log(`[VoiceDna] Loaded ${cache.size} workspaces, ${[...historyByWs.values()].reduce((a,b)=>a+b.length,0)} total snapshots`);
   } catch (err) {
-    console.warn('[VoiceDna] Failed to load voice DNA from Airtable:', err.message);
-    console.warn('[VoiceDna] Make sure the Airtable table exists with fields: WorkspaceId, Json, GeneratedAt, BasedOnCount, Model, SourceCounts');
+    console.warn('[VoiceDna] Failed to load voice DNA from Postgres:', err.message);
   }
 }
 
@@ -230,21 +214,18 @@ async function _runExtraction(workspaceId) {
   const generatedAt = new Date().toISOString();
   const basedOnCount = prefs.length;
 
-  let recordId = null;
-  const b = getAirtable();
-  if (b) {
+  const recordId = uuidv4();
+  if (db.isConfigured()) {
     try {
-      const [rec] = await b(VOICE_DNA_TABLE).create([{ fields: {
-        WorkspaceId:  workspaceId,
-        Json:         JSON.stringify(dna),
-        GeneratedAt:  generatedAt,
-        BasedOnCount: basedOnCount,
-        Model:        EXTRACT_MODEL,
-        SourceCounts: JSON.stringify(sourceCounts),
-      }}]);
-      recordId = rec.id;
+      await db.query(`
+        INSERT INTO voice_dna (id, workspace_id, dna, based_on_count, model, source_counts, generated_at)
+        VALUES ($1, $2, $3::jsonb, $4, $5, $6::jsonb, $7)
+      `, [
+        recordId, workspaceId, JSON.stringify(dna), basedOnCount,
+        EXTRACT_MODEL, JSON.stringify(sourceCounts), generatedAt,
+      ]);
     } catch (err) {
-      console.warn('[VoiceDna] Airtable write failed:', err.message);
+      console.warn('[VoiceDna] Postgres write failed:', err.message);
     }
   }
 

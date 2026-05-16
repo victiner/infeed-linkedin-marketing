@@ -1,37 +1,28 @@
 // src/services/store.js
-// Airtable-backed store with in-memory cache
+// Postgres-backed store with in-memory cache.
 //
-// Required Airtable tables (create in your base):
+// Replaces the prior Airtable backing store. Schema lives in src/db/schema.sql
+// and is auto-applied on startup. All write operations update the in-memory
+// cache synchronously and persist to Postgres in the background — callers
+// never wait on the DB.
 //
-//   Leads         — id, linkedInUrl, name, role, company, senderId, tags,
-//                   stage, funnelStage, sentiment, lastRoutingDecision,
-//                   lastAssetSent, creditsUsed, creditsTotal,
-//                   trialStarted, trialExpired, callBooked, converted,
-//                   createdAt, updatedAt
-//
-//   Conversations — id, leadId, senderId, messages, drafts, status,
-//                   createdAt, updatedAt
-//
-//   Actions       — id, type, leadId, conversationId, data, result, timestamp
-//
-// All complex fields (messages, drafts, data, etc.) are stored as JSON strings.
-// All write operations update the in-memory cache immediately and sync to
-// Airtable in the background — callers never wait for Airtable.
+// Backward compat: every record still has an `airtableId` field (set to the
+// same value as `id`) so older callers that key on `airtableId` keep working
+// without changes.
 
 const { v4: uuidv4 } = require('uuid');
-const Airtable = require('airtable');
 const fs = require('fs');
 const path = require('path');
+const db = require('../db');
 
 // ---- LOCAL TRAINING BACKUP -------------------------------------------------
 // Every training preference is also written to a local JSON file. This means:
-//   1. If Airtable is unavailable / rate-limited / misconfigured (no API key
-//      on the current machine), the record still survives a server restart.
-//   2. On startup, after loading from Airtable, we replay any local-only
-//      records (those without an airtableId in Airtable) so the in-memory
-//      store has everything you ever trained, regardless of which machine.
-//   3. forceResyncTrainingToAirtable() can re-push any in-memory records that
-//      lack an airtableId to Airtable when it recovers.
+//   1. If Postgres is unavailable, the record still survives a server restart.
+//   2. On startup, after loading from Postgres, we replay any local-only
+//      records so the in-memory store has everything you ever trained,
+//      regardless of which machine.
+//   3. forceResyncTrainingToAirtable() (legacy export name) re-pushes any
+//      in-memory records missing an id to Postgres when it recovers.
 const TRAINING_BACKUP_PATH = path.join(__dirname, '..', '..', 'data', 'training-backup.jsonl');
 function ensureBackupDir() {
   try { fs.mkdirSync(path.dirname(TRAINING_BACKUP_PATH), { recursive: true }); } catch {}
@@ -39,8 +30,6 @@ function ensureBackupDir() {
 function appendTrainingBackup(pref) {
   try {
     ensureBackupDir();
-    // JSONL: one record per line. Append-only, so concurrent writes can't
-    // corrupt the file mid-record. Reads happen only at startup.
     fs.appendFileSync(TRAINING_BACKUP_PATH, JSON.stringify(pref) + '\n', 'utf-8');
   } catch (err) {
     console.warn('[Store] Local training backup write failed:', err.message);
@@ -59,47 +48,14 @@ function readTrainingBackup() {
   }
 }
 
-// Parse base ID — handle "appXXX/tblXXX" URL format copied from Airtable.
-// Read from env at CALL time, not module load, so the dashboard's settings
-// panel can update credentials at runtime and have them take effect.
-function currentBaseId() {
-  return (process.env.AIRTABLE_BASE_ID || '').split('/')[0];
-}
-
-const TABLES = {
-  leads:         process.env.AIRTABLE_LEADS_TABLE         || 'Leads',
-  conversations: process.env.AIRTABLE_CONVERSATIONS_TABLE || 'Conversations',
-  actions:       process.env.AIRTABLE_ACTIONS_TABLE       || 'Actions',
-  training:      process.env.AIRTABLE_TRAINING_TABLE      || 'Training',
-  ratings:       process.env.AIRTABLE_RATINGS_TABLE       || 'Ratings',
-};
-
-let base = null;
-
-function getBase() {
-  const baseId = currentBaseId();
-  if (!base && process.env.AIRTABLE_API_KEY && baseId) {
-    base = new Airtable({ apiKey: process.env.AIRTABLE_API_KEY }).base(baseId);
-  }
-  return base;
-}
-
-// Invalidate the cached Airtable client. Called by the settings route after
-// the user updates AIRTABLE_API_KEY / AIRTABLE_BASE_ID via the dashboard, so
-// the next getBase() call rebuilds the client with the new credentials.
-function resetAirtableClient() {
-  base = null;
-}
-
 // In-memory cache
 const leads         = new Map(); // leadId → lead
 const conversations = new Map(); // conversationId → conversation
 const actions       = [];        // append-only
 const trainingPreferences = [];  // recorded user style choices
+const messageRatings      = [];
 
 // Write-time index: Map<workspaceId, Map<scenarioKey, count>>
-// Maintained incrementally on every addTrainingPreference() — O(1) lookup per scenario key.
-// Avoids scanning the full preferences array to count per-scenario ratings.
 const scenarioCounts = new Map();
 
 function _scenarioKey(scenario) {
@@ -127,32 +83,15 @@ function getScenarioCountsForWorkspace(workspaceId) {
   return scenarioCounts.get(workspaceId) || new Map();
 }
 
-// Airtable record ID cache: our ID → Airtable record id
-const atIds = {
-  leads:         new Map(),
-  conversations: new Map(),
-};
-
-// ---- AIRTABLE SYNC HELPERS (fire-and-forget) ----
-
-function safeStr(val) {
-  if (val === null || val === undefined) return '';
-  if (typeof val === 'string') return val;
-  return JSON.stringify(val);
-}
-
 // Strip dashboard-only metadata from a thread before serializing it for
 // storage. Without this, sim-thread messages carry their full guidance
-// breakdown (canonical examples, Q&A pulls, corrections, etc.) on each turn,
-// which can balloon the JSON well past Airtable's 100K Long-text limit.
-// We only need sender + text + a few flags downstream — strip everything else.
+// breakdown on each turn, ballooning the JSON.
 function sanitizeThread(thread) {
   if (!Array.isArray(thread)) return [];
   return thread
     .filter(m => m && typeof m.sender === 'string' && typeof m.text === 'string')
     .map(m => {
       const out = { sender: m.sender, text: m.text };
-      // Preserve flags that affect render but cost nothing to keep.
       if (m._synthesized) out._synthesized = true;
       if (m._ghost) out._ghost = true;
       if (m._followUp) out._followUp = true;
@@ -162,210 +101,229 @@ function sanitizeThread(thread) {
     });
 }
 
-function safeJSON(val) {
-  if (!val) return null;
-  try { return JSON.parse(val); } catch { return val; }
-}
+// ---- POSTGRES SYNC HELPERS (fire-and-forget) ----
 
 async function syncLead(lead) {
-  const b = getBase();
-  if (!b) return;
+  if (!db.isConfigured()) return;
   try {
-    const fields = {
-      id:                   lead.id,
-      linkedInUrl:          lead.linkedInUrl || '',
-      name:                 lead.name || '',
-      role:                 lead.role || '',
-      company:              lead.company || '',
-      senderId:             lead.senderId || '',
-      tags:                 JSON.stringify(lead.tags || []),
-      stage:                lead.stage || 'cold',
-      funnelStage:          lead.funnelStage || 'cold_opener',
-      sentiment:            lead.sentiment || 'neutral',
-      lastRoutingDecision:  JSON.stringify(lead.lastRoutingDecision || null),
-      lastAssetSent:        lead.lastAssetSent || '',
-      creditsUsed:          lead.creditsUsed || 0,
-      creditsTotal:         lead.creditsTotal || 20,
-      trialStarted:         lead.trialStarted || false,
-      trialExpired:         lead.trialExpired || false,
-      callBooked:           lead.callBooked || false,
-      converted:            lead.converted || false,
-      campaignId:           lead.campaignId || '',
-      currentStepIndex:     lead.currentStepIndex || 0,
-      lastStepAt:           lead.lastStepAt || '',
-      notes:                JSON.stringify(lead.notes || {}),
-      notesUpdatedAt:       lead.notesUpdatedAt || '',
-      createdAt:            lead.createdAt || '',
-      updatedAt:            lead.updatedAt || '',
-      WorkspaceId:          lead.workspaceId || '',
-    };
-    const existing = atIds.leads.get(lead.id);
-    if (existing) {
-      await b(TABLES.leads).update(existing, fields);
-    } else {
-      const [rec] = await b(TABLES.leads).create([{ fields }]);
-      atIds.leads.set(lead.id, rec.id);
-    }
+    await db.query(`
+      INSERT INTO leads (
+        id, linkedin_url, name, role, company, sender_id, tags, stage,
+        funnel_stage, sentiment, last_routing_decision, last_asset_sent,
+        credits_used, credits_total, trial_started, trial_expired,
+        call_booked, converted, campaign_id, current_step_index,
+        last_step_at, notes, notes_updated_at, workspace_id,
+        created_at, updated_at
+      ) VALUES (
+        $1, $2, $3, $4, $5, $6, $7::jsonb, $8,
+        $9, $10, $11::jsonb, $12,
+        $13, $14, $15, $16,
+        $17, $18, $19, $20,
+        $21, $22::jsonb, $23, $24,
+        $25, $26
+      )
+      ON CONFLICT (id) DO UPDATE SET
+        linkedin_url = EXCLUDED.linkedin_url,
+        name = EXCLUDED.name,
+        role = EXCLUDED.role,
+        company = EXCLUDED.company,
+        sender_id = EXCLUDED.sender_id,
+        tags = EXCLUDED.tags,
+        stage = EXCLUDED.stage,
+        funnel_stage = EXCLUDED.funnel_stage,
+        sentiment = EXCLUDED.sentiment,
+        last_routing_decision = EXCLUDED.last_routing_decision,
+        last_asset_sent = EXCLUDED.last_asset_sent,
+        credits_used = EXCLUDED.credits_used,
+        credits_total = EXCLUDED.credits_total,
+        trial_started = EXCLUDED.trial_started,
+        trial_expired = EXCLUDED.trial_expired,
+        call_booked = EXCLUDED.call_booked,
+        converted = EXCLUDED.converted,
+        campaign_id = EXCLUDED.campaign_id,
+        current_step_index = EXCLUDED.current_step_index,
+        last_step_at = EXCLUDED.last_step_at,
+        notes = EXCLUDED.notes,
+        notes_updated_at = EXCLUDED.notes_updated_at,
+        updated_at = EXCLUDED.updated_at
+    `, [
+      lead.id, lead.linkedInUrl || '', lead.name || '', lead.role || '',
+      lead.company || '', lead.senderId || '', JSON.stringify(lead.tags || []),
+      lead.stage || 'cold', lead.funnelStage || 'cold_opener',
+      lead.sentiment || 'neutral', JSON.stringify(lead.lastRoutingDecision || null),
+      lead.lastAssetSent || null, lead.creditsUsed || 0, lead.creditsTotal || 20,
+      !!lead.trialStarted, !!lead.trialExpired, !!lead.callBooked, !!lead.converted,
+      lead.campaignId || null, lead.currentStepIndex || 0, lead.lastStepAt || null,
+      JSON.stringify(lead.notes || {}), lead.notesUpdatedAt || null,
+      lead.workspaceId || 'infeed',
+      lead.createdAt || new Date().toISOString(),
+      lead.updatedAt || new Date().toISOString(),
+    ]);
   } catch (err) {
-    console.warn('[Store] Airtable lead sync failed:', err.message);
+    console.warn('[Store] Postgres lead sync failed:', err.message);
   }
 }
 
 async function syncConversation(convo) {
-  const b = getBase();
-  if (!b) return;
+  if (!db.isConfigured()) return;
   try {
-    const fields = {
-      id:          convo.id,
-      leadId:      convo.leadId || '',
-      senderId:    convo.senderId || '',
-      messages:    JSON.stringify(convo.messages || []),
-      drafts:      JSON.stringify(convo.drafts || []),
-      status:      convo.status || 'active',
-      createdAt:   convo.createdAt || '',
-      updatedAt:   convo.updatedAt || '',
-      WorkspaceId: convo.workspaceId || '',
-    };
-    const existing = atIds.conversations.get(convo.id);
-    if (existing) {
-      await b(TABLES.conversations).update(existing, fields);
-    } else {
-      const [rec] = await b(TABLES.conversations).create([{ fields }]);
-      atIds.conversations.set(convo.id, rec.id);
-    }
+    await db.query(`
+      INSERT INTO conversations (
+        id, lead_id, sender_id, messages, drafts, status,
+        workspace_id, created_at, updated_at
+      ) VALUES ($1, $2, $3, $4::jsonb, $5::jsonb, $6, $7, $8, $9)
+      ON CONFLICT (id) DO UPDATE SET
+        lead_id = EXCLUDED.lead_id,
+        sender_id = EXCLUDED.sender_id,
+        messages = EXCLUDED.messages,
+        drafts = EXCLUDED.drafts,
+        status = EXCLUDED.status,
+        updated_at = EXCLUDED.updated_at
+    `, [
+      convo.id, convo.leadId || null, convo.senderId || null,
+      JSON.stringify(convo.messages || []),
+      JSON.stringify(convo.drafts || []),
+      convo.status || 'active',
+      convo.workspaceId || 'infeed',
+      convo.createdAt || new Date().toISOString(),
+      convo.updatedAt || new Date().toISOString(),
+    ]);
   } catch (err) {
-    console.warn('[Store] Airtable conversation sync failed:', err.message);
+    console.warn('[Store] Postgres conversation sync failed:', err.message);
   }
 }
 
 async function syncAction(action) {
-  const b = getBase();
-  if (!b) return;
+  if (!db.isConfigured()) return;
   try {
-    await b(TABLES.actions).create([{ fields: {
-      id:             action.id,
-      type:           action.type || '',
-      leadId:         action.leadId || '',
-      conversationId: action.conversationId || '',
-      data:           JSON.stringify(action.data || {}),
-      result:         safeStr(action.result),
-      timestamp:      action.timestamp || '',
-      WorkspaceId:    action.workspaceId || '',
-    }}]);
+    await db.query(`
+      INSERT INTO actions (id, type, lead_id, conversation_id, data, result, workspace_id, timestamp)
+      VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8)
+      ON CONFLICT (id) DO NOTHING
+    `, [
+      action.id, action.type || '', action.leadId || null, action.conversationId || null,
+      JSON.stringify(action.data || {}),
+      typeof action.result === 'string' ? action.result : JSON.stringify(action.result || ''),
+      action.workspaceId || 'infeed',
+      action.timestamp || new Date().toISOString(),
+    ]);
   } catch (err) {
-    console.warn('[Store] Airtable action sync failed:', err.message);
+    console.warn('[Store] Postgres action sync failed:', err.message);
   }
 }
 
-// ---- STARTUP: load from Airtable ----
+// ---- STARTUP: load from Postgres ----
 
 async function init() {
-  const b = getBase();
-  if (!b) {
-    console.log('[Store] Airtable not configured — using in-memory store only');
+  if (!db.isConfigured()) {
+    console.log('[Store] DATABASE_URL not set — using in-memory store only (data will be lost on restart)');
     return;
   }
-  console.log('[Store] Loading data from Airtable...');
+  console.log('[Store] Loading data from Postgres...');
 
-  // Leads
   try {
-    const records = await b(TABLES.leads).select({ maxRecords: 10000 }).all();
-    for (const rec of records) {
-      const f = rec.fields;
-      if (!f.id) continue;
+    const { rows } = await db.query(`SELECT * FROM leads ORDER BY updated_at DESC`);
+    for (const r of rows) {
       const lead = {
-        id:                   f.id,
-        linkedInUrl:          f.linkedInUrl || '',
-        name:                 f.name || '',
-        role:                 f.role || '',
-        company:              f.company || '',
-        senderId:             f.senderId || '',
-        tags:                 safeJSON(f.tags) || [],
-        stage:                f.stage || 'cold',
-        funnelStage:          f.funnelStage || 'cold_opener',
-        sentiment:            f.sentiment || 'neutral',
-        lastRoutingDecision:  safeJSON(f.lastRoutingDecision),
-        lastAssetSent:        f.lastAssetSent || null,
-        creditsUsed:          f.creditsUsed || 0,
-        creditsTotal:         f.creditsTotal || 20,
-        trialStarted:         f.trialStarted || false,
-        trialExpired:         f.trialExpired || false,
-        callBooked:           f.callBooked || false,
-        converted:            f.converted || false,
-        campaignId:           f.campaignId || null,
-        currentStepIndex:     f.currentStepIndex || 0,
-        lastStepAt:           f.lastStepAt || null,
-        notes:                safeJSON(f.notes) || {},
-        notesUpdatedAt:       f.notesUpdatedAt || null,
-        createdAt:            f.createdAt || new Date().toISOString(),
-        updatedAt:            f.updatedAt || new Date().toISOString(),
-        workspaceId:          f.WorkspaceId || 'infeed',
+        id:                   r.id,
+        linkedInUrl:          r.linkedin_url || '',
+        name:                 r.name || '',
+        role:                 r.role || '',
+        company:              r.company || '',
+        senderId:             r.sender_id || '',
+        tags:                 r.tags || [],
+        stage:                r.stage || 'cold',
+        funnelStage:          r.funnel_stage || 'cold_opener',
+        sentiment:            r.sentiment || 'neutral',
+        lastRoutingDecision:  r.last_routing_decision || null,
+        lastAssetSent:        r.last_asset_sent || null,
+        creditsUsed:          r.credits_used || 0,
+        creditsTotal:         r.credits_total || 20,
+        trialStarted:         !!r.trial_started,
+        trialExpired:         !!r.trial_expired,
+        callBooked:           !!r.call_booked,
+        converted:            !!r.converted,
+        campaignId:           r.campaign_id || null,
+        currentStepIndex:     r.current_step_index || 0,
+        lastStepAt:           r.last_step_at ? new Date(r.last_step_at).toISOString() : null,
+        notes:                r.notes || {},
+        notesUpdatedAt:       r.notes_updated_at ? new Date(r.notes_updated_at).toISOString() : null,
+        workspaceId:          r.workspace_id || 'infeed',
+        createdAt:            r.created_at ? new Date(r.created_at).toISOString() : new Date().toISOString(),
+        updatedAt:            r.updated_at ? new Date(r.updated_at).toISOString() : new Date().toISOString(),
       };
       leads.set(lead.id, lead);
-      atIds.leads.set(lead.id, rec.id);
     }
     console.log(`[Store] Loaded ${leads.size} leads`);
   } catch (err) {
-    console.warn('[Store] Could not load leads from Airtable:', err.message);
+    console.warn('[Store] Could not load leads from Postgres:', err.message);
   }
 
-  // Conversations
   try {
-    const records = await b(TABLES.conversations).select({ maxRecords: 10000 }).all();
-    for (const rec of records) {
-      const f = rec.fields;
-      if (!f.id) continue;
+    const { rows } = await db.query(`SELECT * FROM conversations ORDER BY updated_at DESC`);
+    for (const r of rows) {
       const convo = {
-        id:          f.id,
-        leadId:      f.leadId || '',
-        senderId:    f.senderId || '',
-        messages:    safeJSON(f.messages) || [],
-        drafts:      safeJSON(f.drafts) || [],
-        status:      f.status || 'active',
-        createdAt:   f.createdAt || new Date().toISOString(),
-        updatedAt:   f.updatedAt || new Date().toISOString(),
-        workspaceId: f.WorkspaceId || 'infeed',
+        id:          r.id,
+        leadId:      r.lead_id || '',
+        senderId:    r.sender_id || '',
+        messages:    r.messages || [],
+        drafts:      r.drafts || [],
+        status:      r.status || 'active',
+        workspaceId: r.workspace_id || 'infeed',
+        createdAt:   r.created_at ? new Date(r.created_at).toISOString() : new Date().toISOString(),
+        updatedAt:   r.updated_at ? new Date(r.updated_at).toISOString() : new Date().toISOString(),
       };
       conversations.set(convo.id, convo);
-      atIds.conversations.set(convo.id, rec.id);
     }
     console.log(`[Store] Loaded ${conversations.size} conversations`);
   } catch (err) {
-    console.warn('[Store] Could not load conversations from Airtable:', err.message);
+    console.warn('[Store] Could not load conversations from Postgres:', err.message);
   }
 
-  // Actions
   try {
-    const records = await b(TABLES.actions).select({
-      maxRecords: 10000,
-      sort: [{ field: 'timestamp', direction: 'asc' }]
-    }).all();
-    for (const rec of records) {
-      const f = rec.fields;
-      if (!f.id) continue;
+    const { rows } = await db.query(`SELECT * FROM actions ORDER BY timestamp ASC`);
+    for (const r of rows) {
       actions.push({
-        id:             f.id,
-        type:           f.type || '',
-        leadId:         f.leadId || '',
-        conversationId: f.conversationId || '',
-        data:           safeJSON(f.data) || {},
-        result:         safeJSON(f.result) || '',
-        timestamp:      f.timestamp || new Date().toISOString(),
-        workspaceId:    f.WorkspaceId || 'infeed',
+        id:             r.id,
+        type:           r.type || '',
+        leadId:         r.lead_id || '',
+        conversationId: r.conversation_id || '',
+        data:           r.data || {},
+        result:         r.result || '',
+        workspaceId:    r.workspace_id || 'infeed',
+        timestamp:      r.timestamp ? new Date(r.timestamp).toISOString() : new Date().toISOString(),
       });
     }
     console.log(`[Store] Loaded ${actions.length} actions`);
   } catch (err) {
-    console.warn('[Store] Could not load actions from Airtable:', err.message);
+    console.warn('[Store] Could not load actions from Postgres:', err.message);
+  }
+
+  try {
+    const { rows } = await db.query(`SELECT * FROM ratings`);
+    for (const r of rows) {
+      messageRatings.push({
+        id:             r.id,
+        conversationId: r.conversation_id || '',
+        leadName:       r.lead_name || '',
+        messageText:    r.message_text || '',
+        rating:         r.rating || '',
+        category:       r.category || '',
+        feedback:       r.feedback || '',
+        wasAutoSent:    !!r.was_auto_sent,
+        workspaceId:    r.workspace_id || 'infeed',
+        timestamp:      r.timestamp ? new Date(r.timestamp).toISOString() : new Date().toISOString(),
+      });
+    }
+    console.log(`[Store] Loaded ${messageRatings.length} message ratings`);
+  } catch (err) {
+    console.warn('[Store] Could not load ratings from Postgres:', err.message);
   }
 }
 
 // ---- LEAD OPERATIONS ----
 
 function upsertLead({ linkedInUrl, name, role, company, senderId, tags = [], notes = {}, about = '' }) {
-  // Build the patch of notes additions: explicit notes object plus any free-text
-  // about/headline fields. Empty values are dropped so they don't overwrite
-  // existing notes with blanks.
   const notesPatch = { ...(notes || {}) };
   if (about) notesPatch.about = about;
   Object.keys(notesPatch).forEach(k => {
@@ -419,8 +377,6 @@ function upsertLead({ linkedInUrl, name, role, company, senderId, tags = [], not
   return lead;
 }
 
-// Update notes for a lead (merges with existing). Used by the notes extraction service
-// and by manual overrides from the UI.
 function updateLeadNotes(leadId, notes) {
   const lead = leads.get(leadId);
   if (!lead) return null;
@@ -455,33 +411,32 @@ function getLead(leadId) {
   return leads.get(leadId) || null;
 }
 
-// Delete a lead and cascade to its conversations. Removes from in-memory maps
-// and (best-effort) from Airtable. Returns a summary of what was deleted.
+// Delete a lead + cascade conversations and actions.
 async function deleteLead(leadId) {
   const lead = leads.get(leadId);
   if (!lead) return { deleted: false, reason: 'not_found' };
 
   const relatedConvos = [...conversations.values()].filter(c => c.leadId === leadId);
-  const b = getBase();
 
-  // Best-effort Airtable cleanup — failures shouldn't block the in-memory delete.
-  for (const convo of relatedConvos) {
-    const recId = atIds.conversations.get(convo.id);
-    if (b && recId) {
-      try { await b(TABLES.conversations).destroy(recId); }
-      catch (err) { console.warn(`[Store] Airtable convo destroy failed for ${convo.id}:`, err.message); }
+  if (db.isConfigured()) {
+    try {
+      await db.query(`DELETE FROM conversations WHERE lead_id = $1`, [leadId]);
+      await db.query(`DELETE FROM actions WHERE lead_id = $1`, [leadId]);
+      await db.query(`DELETE FROM leads WHERE id = $1`, [leadId]);
+    } catch (err) {
+      console.warn('[Store] Postgres deleteLead cascade failed:', err.message);
     }
-    atIds.conversations.delete(convo.id);
+  }
+
+  for (const convo of relatedConvos) {
     conversations.delete(convo.id);
   }
-
-  const leadRecId = atIds.leads.get(leadId);
-  if (b && leadRecId) {
-    try { await b(TABLES.leads).destroy(leadRecId); }
-    catch (err) { console.warn(`[Store] Airtable lead destroy failed for ${leadId}:`, err.message); }
-  }
-  atIds.leads.delete(leadId);
   leads.delete(leadId);
+
+  // Remove related actions from in-memory log
+  for (let i = actions.length - 1; i >= 0; i--) {
+    if (actions[i].leadId === leadId) actions.splice(i, 1);
+  }
 
   logAction({
     type: 'lead_deleted', leadId,
@@ -600,14 +555,11 @@ function getAllConversations(workspaceId) {
 }
 
 // Append an outbound message to a conversation's messages[] so it shows in the
-// Conversations panel. Dedupes if an identical message was just appended (e.g.
-// a sync race or a retry). `status` is 'queued' (handed to HeyReach, not yet
-// confirmed delivered) or 'sent' (confirmed delivered on the inbox endpoint).
+// Conversations panel. Dedupes if an identical message was just appended.
 function appendOutboundMessage(conversationId, text, { status = 'sent', timestamp } = {}) {
   const convo = conversations.get(conversationId);
   if (!convo) return null;
   const ts = timestamp || new Date().toISOString();
-  // Dedupe: skip if an identical 'us' message exists in the last 60s.
   const sixtySecAgo = Date.now() - 60_000;
   const exists = convo.messages.some(m =>
     m.sender === 'us' && m.text === text && new Date(m.timestamp).getTime() > sixtySecAgo
@@ -621,8 +573,6 @@ function appendOutboundMessage(conversationId, text, { status = 'sent', timestam
   return convo;
 }
 
-// Flip an outbound message's status (e.g. queued → sent) when HeyReach confirms
-// delivery via thread sync. Matches by text + sender, most-recent first.
 function updateOutboundMessageStatus(conversationId, text, newStatus) {
   const convo = conversations.get(conversationId);
   if (!convo) return null;
@@ -639,22 +589,16 @@ function updateOutboundMessageStatus(conversationId, text, newStatus) {
   return convo;
 }
 
-// Replace a conversation's messages[] from a HeyReach thread fetch.
-// HeyReach is source of truth for what's been delivered, so any 'us' message
-// it returns is marked 'sent'. Local 'us' messages still in status='queued'
-// (cold opener that HeyReach hasn't dispatched yet) are preserved by text-match
-// so they don't disappear from the UI between import and HeyReach dispatch.
-// Drafts are untouched.
+// Replace messages[] from a HeyReach thread fetch. Preserves local queued
+// outbound messages that HeyReach hasn't dispatched yet.
 function replaceMessages(conversationId, messages) {
   const convo = conversations.get(conversationId);
   if (!convo) return null;
 
-  // Anything HeyReach returned as 'us' has been delivered.
   const fromHeyReach = messages.map(m =>
     m.sender === 'us' ? { ...m, status: 'sent' } : m
   );
 
-  // Preserve any local queued outbound that HeyReach hasn't sent yet.
   const hrUsTexts = new Set(messages.filter(m => m.sender === 'us').map(m => m.text));
   const preservedQueued = convo.messages.filter(m =>
     m.sender === 'us' && m.status === 'queued' && !hrUsTexts.has(m.text)
@@ -669,32 +613,24 @@ function replaceMessages(conversationId, messages) {
   return convo;
 }
 
-// Delete a conversation from in-memory + Airtable. Used by the merge logic when
-// a synthetic `import-${leadId}` conv gets absorbed into a real HeyReach conv.
 async function deleteConversation(conversationId) {
   const convo = conversations.get(conversationId);
   if (!convo) return false;
-  const b = getBase();
-  const recId = atIds.conversations.get(conversationId);
-  if (b && recId) {
-    try { await b(TABLES.conversations).destroy(recId); }
-    catch (err) { console.warn(`[Store] Airtable convo destroy failed for ${conversationId}:`, err.message); }
+  if (db.isConfigured()) {
+    try { await db.query(`DELETE FROM conversations WHERE id = $1`, [conversationId]); }
+    catch (err) { console.warn(`[Store] Postgres deleteConversation failed for ${conversationId}:`, err.message); }
   }
-  atIds.conversations.delete(conversationId);
   conversations.delete(conversationId);
   return true;
 }
 
 // Merge a synthetic conversation (e.g. `import-${leadId}`) into a real HeyReach
-// conversation ID. Ports messages (dedupe by sender+text+timestamp) and pending
-// drafts from synth → real, then deletes synth. Idempotent: if the synth doesn't
-// exist, returns the real conv unchanged.
+// conversation ID. Ports messages + drafts, then deletes synth.
 function mergeConversations(synthId, realId, { leadId, senderId } = {}) {
   if (synthId === realId) return conversations.get(realId) || null;
   const synth = conversations.get(synthId);
   if (!synth) return conversations.get(realId) || null;
 
-  // Ensure the real conv exists, with the synth's messages as a starting point.
   let real = conversations.get(realId);
   if (!real) {
     const wsModule = require('./workspace');
@@ -711,7 +647,6 @@ function mergeConversations(synthId, realId, { leadId, senderId } = {}) {
     };
     conversations.set(realId, real);
   } else {
-    // Merge messages with dedupe (sender + text + timestamp window).
     const existingKeys = new Set(real.messages.map(m => `${m.sender}-${m.text}-${m.timestamp}`));
     for (const m of synth.messages) {
       const key = `${m.sender}-${m.text}-${m.timestamp}`;
@@ -719,7 +654,6 @@ function mergeConversations(synthId, realId, { leadId, senderId } = {}) {
     }
     real.messages.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
 
-    // Port any pending drafts that haven't been re-issued under the real conv.
     const realDraftKeys = new Set(real.drafts.map(d => d.text));
     for (const d of synth.drafts) {
       if (!realDraftKeys.has(d.text)) real.drafts.push(d);
@@ -730,13 +664,10 @@ function mergeConversations(synthId, realId, { leadId, senderId } = {}) {
   }
   syncConversation(real);
 
-  // Cascade actions logged under the synth ID to the real ID so the action log
-  // still reflects the lifecycle from import → reply → send.
   for (const a of actions) {
     if (a.conversationId === synthId) a.conversationId = realId;
   }
 
-  // Best-effort delete of the synth — fire and forget; failure doesn't block.
   deleteConversation(synthId).catch(err =>
     console.warn(`[Store] Failed to delete synth conv ${synthId}:`, err.message)
   );
@@ -745,8 +676,6 @@ function mergeConversations(synthId, realId, { leadId, senderId } = {}) {
   return real;
 }
 
-// Find the most recent synthetic `import-*` conversation for a lead, if any.
-// Used to detect when a real HeyReach conv should absorb a pre-existing synth.
 function findSyntheticConversationForLead(leadId) {
   return [...conversations.values()].find(c => c.leadId === leadId && c.id.startsWith('import-')) || null;
 }
@@ -852,8 +781,7 @@ function getAnalytics(workspaceId) {
     return acc;
   }, {});
 
-  // Per-route conversion: which routing actions preceded a converted lead
-  const leadRoutesMap = {}; // leadId → Set of routing types received
+  const leadRoutesMap = {};
   for (const a of sentActions) {
     if (!a.leadId || !a.data?.routing) continue;
     if (!leadRoutesMap[a.leadId]) leadRoutesMap[a.leadId] = new Set();
@@ -869,7 +797,6 @@ function getAnalytics(workspaceId) {
     }
   }
 
-  // Conversion by funnel stage (what stage were converted leads in at conversion time)
   const conversionByFunnelStage = allLeads
     .filter(l => l.converted)
     .reduce((acc, l) => {
@@ -902,76 +829,59 @@ function getAnalytics(workspaceId) {
 
 // ---- TRAINING PREFERENCES ----
 
-// Awaits the Airtable create so the returned pref object has its real airtableId.
-// Callers that don't await still get the synchronous in-memory push (the array push
-// + scenario count increment happen at the top, before the await). Critical for the
-// avatar matrix POST endpoint, which returns the pref to the dashboard immediately —
-// without the airtableId, edit/delete/canonical-toggle break on the freshly-added row.
 async function addTrainingPreference(pref) {
   const workspace = require('./workspace');
   pref.workspaceId = workspace.getId();
   pref.source = pref.source || 'training';
-  // Sanitize thread once at the entry point — strips dashboard-only metadata
-  // (breakdown, avatarId, etc.) so the stored thread stays small enough for
-  // Airtable's 100K Long text limit. Done here so every downstream consumer
-  // (in-memory store, Airtable write, local backup file) sees the slim form.
   if (pref.thread) pref.thread = sanitizeThread(pref.thread);
+  pref.id = pref.id || uuidv4();
+  pref.airtableId = pref.id; // back-compat alias
+  pref.timestamp = pref.timestamp || new Date().toISOString();
+
   trainingPreferences.push(pref);
   _incrementScenarioCount(pref.workspaceId, pref.scenario);
 
-  // Local JSON backup FIRST. This guarantees the record survives any restart
-  // regardless of Airtable's state — losing a machine means losing nothing.
+  // Local JSON backup FIRST — survives any restart regardless of DB state.
   appendTrainingBackup(pref);
 
-  const b = getBase();
-  if (b) {
+  if (db.isConfigured()) {
     try {
-      const rec = await b(TABLES.training).create([{ fields: {
-        Type:         pref.type || 'draft',
-        Scenario:     safeStr(pref.scenario),
-        Chosen:       safeStr(pref.chosen),
-        Original:     safeStr(pref.original || ''),
-        SelectedText: safeStr(pref.selectedText || ''),
-        Feedback:     safeStr(pref.feedback || ''),
-        Rating:       pref.rating || '',
-        Thread:       safeStr(pref.thread || []),
-        Question:     safeStr(pref.question || ''),
-        OptionIndex:  pref.optionIndex ?? -1,
-        IsCustom:     !!pref.isCustom,
-        Avatar:       pref.avatar || '',
-        IsCanonical:  !!pref.isCanonical,
-        Timestamp:    pref.timestamp,
-        WorkspaceId:  pref.workspaceId,
-        Source:       pref.source,
-      }}]);
-      if (rec && rec[0]) pref.airtableId = rec[0].id;
+      await db.query(`
+        INSERT INTO training (
+          id, type, scenario, chosen, original, selected_text, feedback,
+          rating, thread, question, option_index, is_custom, avatar,
+          is_canonical, source, workspace_id, timestamp
+        ) VALUES (
+          $1, $2, $3::jsonb, $4, $5, $6, $7,
+          $8, $9::jsonb, $10, $11, $12, $13,
+          $14, $15, $16, $17
+        )
+        ON CONFLICT (id) DO NOTHING
+      `, [
+        pref.id, pref.type || 'draft',
+        JSON.stringify(pref.scenario || {}),
+        pref.chosen || '', pref.original || '', pref.selectedText || '',
+        pref.feedback || '', pref.rating || '',
+        JSON.stringify(pref.thread || []),
+        pref.question || '', pref.optionIndex ?? -1, !!pref.isCustom,
+        pref.avatar || '', !!pref.isCanonical,
+        pref.source, pref.workspaceId, pref.timestamp,
+      ]);
     } catch (err) {
-      // Don't throw — keep the in-memory + local-file record. The local backup
-      // means we can re-push later. But DO surface so the dashboard can warn.
       pref._airtableError = err.message;
-      console.warn('[Store] Airtable training sync failed (record kept locally):', err.message);
-      // Auto-retry the resync after a short delay. Handles the common case of
-      // transient rate-limits or network blips — the user shouldn't have to
-      // click anything for these to recover. If retries keep failing, the
-      // dashboard banner stays up and the user can intervene manually.
+      console.warn('[Store] Postgres training sync failed (record kept locally):', err.message);
       _scheduleAutoResync();
     }
   } else {
-    // No Airtable configured on this machine. The local file is the only
-    // store; user must run forceResyncTrainingToAirtable() from a machine
-    // with credentials to push these into Airtable when convenient.
-    pref._airtableError = 'No AIRTABLE_API_KEY on this machine — record saved locally only';
+    pref._airtableError = 'DATABASE_URL not configured on this machine — record saved locally only';
   }
 
-  // Auto-trigger voice DNA refresh (fire-and-forget — never blocks the caller)
   try {
     const voiceDna = require('./voice-dna');
     voiceDna.maybeRegenerate(pref.workspaceId).catch(err =>
       console.warn('[Store] voice-dna auto-regen failed:', err.message)
     );
-  } catch (err) {
-    // voice-dna service not loaded yet — first call will load it
-  }
+  } catch (err) {}
   return pref;
 }
 
@@ -984,27 +894,21 @@ function getTrainingByAvatar(workspaceId, avatarId) {
   return trainingPreferences.filter(p => p.workspaceId === workspaceId && p.avatar === avatarId);
 }
 
-// Hard-delete a training record from Airtable + the in-memory store.
-// Used when the user marks an example as wrong/stale via the avatar browser.
-async function deleteTrainingPreference(airtableId) {
-  const idx = trainingPreferences.findIndex(p => p.airtableId === airtableId);
+async function deleteTrainingPreference(prefId) {
+  const idx = trainingPreferences.findIndex(p => p.airtableId === prefId || p.id === prefId);
   let removed = null;
   if (idx >= 0) {
     [removed] = trainingPreferences.splice(idx, 1);
   }
-  const b = getBase();
-  if (b && airtableId) {
-    try { await b(TABLES.training).destroy(airtableId); }
-    catch (err) { console.warn('[Store] Airtable training delete failed:', err.message); }
+  if (db.isConfigured() && prefId) {
+    try { await db.query(`DELETE FROM training WHERE id = $1`, [prefId]); }
+    catch (err) { console.warn('[Store] Postgres training delete failed:', err.message); }
   }
   return removed;
 }
 
-// Update fields on an existing training record. Supports avatar/canonical metadata
-// AND the message-content fields (chosen, original, feedback, selectedText, rating).
-// Used by migration, the canonical toggle, and the avatar browser's inline editor.
-async function updateTrainingFields(airtableId, fields) {
-  const pref = trainingPreferences.find(p => p.airtableId === airtableId);
+async function updateTrainingFields(prefId, fields) {
+  const pref = trainingPreferences.find(p => p.airtableId === prefId || p.id === prefId);
   if (pref) {
     if ('avatar'       in fields) pref.avatar       = fields.avatar;
     if ('isCanonical'  in fields) pref.isCanonical  = !!fields.isCanonical;
@@ -1015,21 +919,26 @@ async function updateTrainingFields(airtableId, fields) {
     if ('rating'       in fields) pref.rating       = fields.rating;
     if ('question'     in fields) pref.question     = fields.question;
   }
-  const b = getBase();
-  if (!b || !airtableId) return pref || null;
+  if (!db.isConfigured() || !prefId) return pref || null;
+
+  const setClauses = [];
+  const params = [];
+  let i = 1;
+  if ('avatar'       in fields) { setClauses.push(`avatar = $${i++}`);       params.push(fields.avatar); }
+  if ('isCanonical'  in fields) { setClauses.push(`is_canonical = $${i++}`); params.push(!!fields.isCanonical); }
+  if ('chosen'       in fields) { setClauses.push(`chosen = $${i++}`);       params.push(fields.chosen); }
+  if ('original'     in fields) { setClauses.push(`original = $${i++}`);     params.push(fields.original); }
+  if ('feedback'     in fields) { setClauses.push(`feedback = $${i++}`);     params.push(fields.feedback); }
+  if ('selectedText' in fields) { setClauses.push(`selected_text = $${i++}`); params.push(fields.selectedText); }
+  if ('rating'       in fields) { setClauses.push(`rating = $${i++}`);       params.push(fields.rating); }
+  if ('question'     in fields) { setClauses.push(`question = $${i++}`);     params.push(fields.question); }
+
+  if (setClauses.length === 0) return pref || null;
+  params.push(prefId);
   try {
-    const atFields = {};
-    if ('avatar'       in fields) atFields.Avatar       = fields.avatar;
-    if ('isCanonical'  in fields) atFields.IsCanonical  = !!fields.isCanonical;
-    if ('chosen'       in fields) atFields.Chosen       = fields.chosen;
-    if ('original'     in fields) atFields.Original     = fields.original;
-    if ('feedback'     in fields) atFields.Feedback     = fields.feedback;
-    if ('selectedText' in fields) atFields.SelectedText = fields.selectedText;
-    if ('rating'       in fields) atFields.Rating       = fields.rating;
-    if ('question'     in fields) atFields.Question     = fields.question;
-    await b(TABLES.training).update(airtableId, atFields);
+    await db.query(`UPDATE training SET ${setClauses.join(', ')} WHERE id = $${i}`, params);
   } catch (err) {
-    console.warn('[Store] Airtable training update failed:', err.message);
+    console.warn('[Store] Postgres training update failed:', err.message);
   }
   return pref || null;
 }
@@ -1037,7 +946,6 @@ async function updateTrainingFields(airtableId, fields) {
 function clearTrainingPreferences() {
   const workspace = require('./workspace');
   const wsId = workspace.getId();
-  // Only clear this workspace's data
   for (let i = trainingPreferences.length - 1; i >= 0; i--) {
     if (trainingPreferences[i].workspaceId === wsId) {
       trainingPreferences.splice(i, 1);
@@ -1048,26 +956,24 @@ function clearTrainingPreferences() {
 
 // ---- MESSAGE RATINGS ----
 
-const messageRatings = [];
-
 function addMessageRating(rating) {
   const workspace = require('./workspace');
   rating.workspaceId = workspace.getId();
+  rating.id = rating.id || uuidv4();
+  rating.timestamp = rating.timestamp || new Date().toISOString();
   messageRatings.push(rating);
-  // Sync to Airtable
-  const b = getBase();
-  if (b) {
-    b(TABLES.ratings).create([{ fields: {
-      ConversationId: rating.conversationId,
-      LeadName: rating.leadName,
-      MessageText: safeStr(rating.messageText),
-      Rating: rating.rating,
-      Category: rating.category || '',
-      Feedback: rating.feedback || '',
-      WasAutoSent: !!rating.wasAutoSent,
-      Timestamp: rating.timestamp,
-      WorkspaceId: rating.workspaceId,
-    }}]).catch(err => console.warn('[Store] Airtable rating sync failed:', err.message));
+
+  if (db.isConfigured()) {
+    db.query(`
+      INSERT INTO ratings (id, conversation_id, lead_name, message_text, rating, category, feedback, was_auto_sent, workspace_id, timestamp)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+      ON CONFLICT (id) DO NOTHING
+    `, [
+      rating.id, rating.conversationId || null, rating.leadName || '',
+      rating.messageText || '', rating.rating || '', rating.category || '',
+      rating.feedback || '', !!rating.wasAutoSent, rating.workspaceId,
+      rating.timestamp,
+    ]).catch(err => console.warn('[Store] Postgres rating sync failed:', err.message));
   }
 }
 
@@ -1076,57 +982,45 @@ function getMessageRatings(workspaceId) {
   return messageRatings;
 }
 
-// Load training data from Airtable on startup, then replay any local-only
-// records from the JSONL backup file. The replay is keyed on (timestamp +
-// chosen-text-hash) so we don't duplicate records that DID make it to Airtable.
+// Load training from Postgres on startup, then replay any local-only JSONL
+// records (records on this machine that never made it to the DB).
 async function loadTraining() {
-  const b = getBase();
-  if (b) {
+  if (db.isConfigured()) {
     try {
-      // No maxRecords cap — Airtable's .all() handles pagination internally and
-      // returns every row. Earlier we capped at 500, which silently dropped any
-      // records past that threshold on each restart (newest-first lost when
-      // sorted ASC). Sort DESC so if we ever do hit a cap (Airtable's hard
-      // limit), the OLDEST get dropped instead of the freshest training.
-      const records = await b(TABLES.training).select({ sort: [{ field: 'Timestamp', direction: 'desc' }] }).all();
-      for (const r of records) {
-        let scenario;
-        try { scenario = JSON.parse(r.get('Scenario') || '{}'); } catch { scenario = {}; }
-        let loadedThread = [];
-        try { loadedThread = JSON.parse(r.get('Thread') || '[]'); } catch { loadedThread = []; }
+      const { rows } = await db.query(`SELECT * FROM training ORDER BY timestamp DESC`);
+      for (const r of rows) {
         const loadedPref = {
-          type: r.get('Type') || 'draft',
-          scenario,
-          chosen:       r.get('Chosen') || '',
-          original:     r.get('Original') || '',
-          selectedText: r.get('SelectedText') || '',
-          feedback:     r.get('Feedback') || '',
-          rating:       r.get('Rating') || '',
-          thread:       loadedThread,
-          question:     r.get('Question') || '',
-          optionIndex:  r.get('OptionIndex') ?? -1,
-          isCustom:     !!r.get('IsCustom'),
-          avatar:       r.get('Avatar') || '',
-          isCanonical:  !!r.get('IsCanonical'),
-          timestamp:    r.get('Timestamp') || '',
-          workspaceId:  r.get('WorkspaceId') || 'infeed',
-          source:       r.get('Source') || 'training',
-          airtableId:   r.id,
+          id:           r.id,
+          airtableId:   r.id, // back-compat
+          type:         r.type || 'draft',
+          scenario:     r.scenario || {},
+          chosen:       r.chosen || '',
+          original:     r.original || '',
+          selectedText: r.selected_text || '',
+          feedback:     r.feedback || '',
+          rating:       r.rating || '',
+          thread:       r.thread || [],
+          question:     r.question || '',
+          optionIndex:  r.option_index ?? -1,
+          isCustom:     !!r.is_custom,
+          avatar:       r.avatar || '',
+          isCanonical:  !!r.is_canonical,
+          source:       r.source || 'training',
+          workspaceId:  r.workspace_id || 'infeed',
+          timestamp:    r.timestamp ? new Date(r.timestamp).toISOString() : '',
         };
         trainingPreferences.push(loadedPref);
         _incrementScenarioCount(loadedPref.workspaceId, loadedPref.scenario);
       }
-      console.log(`[Store] Loaded ${trainingPreferences.length} training preferences from Airtable`);
+      console.log(`[Store] Loaded ${trainingPreferences.length} training preferences from Postgres`);
     } catch (err) {
-      console.warn('[Store] Could not load training data from Airtable:', err.message);
+      console.warn('[Store] Could not load training data from Postgres:', err.message);
     }
   } else {
-    console.log('[Store] No Airtable configured — loading training from local backup only');
+    console.log('[Store] No DATABASE_URL — loading training from local backup only');
   }
 
   // Replay local backup. Identity = timestamp + first 80 chars of chosen.
-  // Anything in the local file that has no matching Airtable record gets
-  // re-loaded into memory.
   const recordKey = (p) => `${p.timestamp || ''}__${(p.chosen || '').slice(0, 80)}`;
   const seen = new Set(trainingPreferences.map(recordKey));
   const localRecords = readTrainingBackup();
@@ -1135,11 +1029,8 @@ async function loadTraining() {
     const key = recordKey(local);
     if (seen.has(key)) continue;
     seen.add(key);
-    // Critical: drop airtableId from the replayed copy. The id from the laptop
-    // that wrote the backup may not exist in THIS server's Airtable base, or
-    // may not be valid here. Treating it as untagged forces the auto-resync
-    // below to re-create the row, which gives us a real id we can use.
-    local.airtableId = undefined;
+    local.id = local.id || uuidv4();
+    local.airtableId = local.id;
     trainingPreferences.push(local);
     _incrementScenarioCount(local.workspaceId, local.scenario);
     replayed++;
@@ -1148,18 +1039,10 @@ async function loadTraining() {
     console.log(`[Store] Replayed ${replayed} local-only training records from backup file.`);
   }
 
-  // Auto-resync at startup: if Airtable is configured AND we have any in-memory
-  // records without an airtableId (replayed from backup, or carried over from
-  // a previous run where Airtable was down), push them up immediately. This
-  // closes the loop on multi-machine workflows: train on a machine without
-  // creds → iCloud syncs the backup file → next time the machine WITH creds
-  // boots, the records auto-land in Airtable. No "Resync now" click required.
-  if (b) {
-    const pendingCount = trainingPreferences.filter(p => !p.airtableId).length;
+  if (db.isConfigured()) {
+    const pendingCount = trainingPreferences.filter(p => p._airtableError || !p.id).length;
     if (pendingCount > 0) {
-      console.log(`[Store] Auto-resyncing ${pendingCount} pending training records to Airtable…`);
-      // Don't await — let the server come up, do this in the background. The
-      // dashboard's pending-sync banner will reflect the live count as it works.
+      console.log(`[Store] Auto-resyncing ${pendingCount} pending training records to Postgres…`);
       forceResyncTrainingToAirtable()
         .then(r => console.log(`[Store] Auto-resync done: pushed ${r.pushed}, failed ${r.failed} of ${r.totalPending}`))
         .catch(err => console.warn('[Store] Auto-resync failed:', err.message));
@@ -1167,71 +1050,76 @@ async function loadTraining() {
   }
 }
 
-// Push every in-memory training record that lacks an airtableId up to
-// Airtable. Used to recover from machine-portability gaps: train on a laptop
-// without credentials, then sync from a machine that has them — or recover
-// after Airtable rate-limits / outages drop a batch of writes.
+// Re-push any in-memory training records flagged with sync errors. Kept the
+// legacy export name (`forceResyncTrainingToAirtable`) so settings.js and the
+// dashboard's pending-sync banner keep working without changes.
 async function forceResyncTrainingToAirtable() {
-  const b = getBase();
-  if (!b) return { pushed: 0, failed: 0, error: 'No AIRTABLE_API_KEY configured on this machine' };
-  const pending = trainingPreferences.filter(p => !p.airtableId);
+  if (!db.isConfigured()) {
+    return { pushed: 0, failed: 0, error: 'DATABASE_URL not configured' };
+  }
+  const pending = trainingPreferences.filter(p => p._airtableError);
   let pushed = 0;
   let failed = 0;
   const errors = [];
-  // Batch by 10 (Airtable allows up to 10 records per create call).
-  for (let i = 0; i < pending.length; i += 10) {
-    const batch = pending.slice(i, i + 10);
+  for (const pref of pending) {
     try {
-      // Sanitize thread defensively — older pending records that pre-date the
-      // entry-point sanitization in addTrainingPreference may still carry the
-      // bloated dashboard metadata. Stripping here lets the resync rescue them.
-      for (const p of batch) {
-        if (p.thread) p.thread = sanitizeThread(p.thread);
-      }
-      const recs = await b(TABLES.training).create(batch.map(pref => ({ fields: {
-        Type:         pref.type || 'draft',
-        Scenario:     safeStr(pref.scenario),
-        Chosen:       safeStr(pref.chosen),
-        Original:     safeStr(pref.original || ''),
-        SelectedText: safeStr(pref.selectedText || ''),
-        Feedback:     safeStr(pref.feedback || ''),
-        Rating:       pref.rating || '',
-        Thread:       safeStr(pref.thread || []),
-        Question:     safeStr(pref.question || ''),
-        OptionIndex:  pref.optionIndex ?? -1,
-        IsCustom:     !!pref.isCustom,
-        Avatar:       pref.avatar || '',
-        IsCanonical:  !!pref.isCanonical,
-        Timestamp:    pref.timestamp,
-        WorkspaceId:  pref.workspaceId,
-        Source:       pref.source,
-      }})));
-      for (let j = 0; j < batch.length; j++) {
-        if (recs[j]) {
-          batch[j].airtableId = recs[j].id;
-          delete batch[j]._airtableError;
-          pushed++;
-        }
-      }
+      if (pref.thread) pref.thread = sanitizeThread(pref.thread);
+      pref.id = pref.id || uuidv4();
+      await db.query(`
+        INSERT INTO training (
+          id, type, scenario, chosen, original, selected_text, feedback,
+          rating, thread, question, option_index, is_custom, avatar,
+          is_canonical, source, workspace_id, timestamp
+        ) VALUES (
+          $1, $2, $3::jsonb, $4, $5, $6, $7,
+          $8, $9::jsonb, $10, $11, $12, $13,
+          $14, $15, $16, $17
+        )
+        ON CONFLICT (id) DO UPDATE SET
+          type = EXCLUDED.type,
+          scenario = EXCLUDED.scenario,
+          chosen = EXCLUDED.chosen,
+          original = EXCLUDED.original,
+          selected_text = EXCLUDED.selected_text,
+          feedback = EXCLUDED.feedback,
+          rating = EXCLUDED.rating,
+          thread = EXCLUDED.thread,
+          question = EXCLUDED.question,
+          option_index = EXCLUDED.option_index,
+          is_custom = EXCLUDED.is_custom,
+          avatar = EXCLUDED.avatar,
+          is_canonical = EXCLUDED.is_canonical,
+          source = EXCLUDED.source,
+          workspace_id = EXCLUDED.workspace_id,
+          timestamp = EXCLUDED.timestamp
+      `, [
+        pref.id, pref.type || 'draft',
+        JSON.stringify(pref.scenario || {}),
+        pref.chosen || '', pref.original || '', pref.selectedText || '',
+        pref.feedback || '', pref.rating || '',
+        JSON.stringify(pref.thread || []),
+        pref.question || '', pref.optionIndex ?? -1, !!pref.isCustom,
+        pref.avatar || '', !!pref.isCanonical,
+        pref.source || 'training',
+        pref.workspaceId || 'infeed',
+        pref.timestamp || new Date().toISOString(),
+      ]);
+      pref.airtableId = pref.id;
+      delete pref._airtableError;
+      pushed++;
     } catch (err) {
-      failed += batch.length;
+      failed++;
       errors.push(err.message);
-      // Mark the batch with the error so the dashboard can surface
-      for (const p of batch) p._airtableError = err.message;
+      pref._airtableError = err.message;
     }
   }
   return { pushed, failed, totalPending: pending.length, errors: errors.slice(0, 5) };
 }
 
 function getPendingTrainingSyncCount() {
-  return trainingPreferences.filter(p => !p.airtableId).length;
+  return trainingPreferences.filter(p => p._airtableError).length;
 }
 
-// Debounced auto-resync: scheduled after a save fails. Coalesces bursts of
-// failures into one resync run 30s later, so transient Airtable rate-limits
-// recover on their own without the user clicking anything. Also re-arms on
-// every failure inside the window, so a long outage doesn't trigger 100
-// concurrent retries.
 let _autoResyncTimer = null;
 function _scheduleAutoResync() {
   if (_autoResyncTimer) clearTimeout(_autoResyncTimer);
@@ -1242,7 +1130,6 @@ function _scheduleAutoResync() {
     try {
       const r = await forceResyncTrainingToAirtable();
       console.log(`[Store] Auto-retry resync: pushed ${r.pushed}, failed ${r.failed} of ${r.totalPending}`);
-      // If anything still failed, re-schedule with a longer backoff
       if (r.failed > 0) {
         setTimeout(() => _scheduleAutoResync(), 60_000);
       }
@@ -1252,6 +1139,10 @@ function _scheduleAutoResync() {
     }
   }, 30_000);
 }
+
+// Back-compat no-op. The Airtable client cache used to live here; Postgres
+// uses an env-var-driven pool that doesn't need explicit invalidation.
+function resetAirtableClient() {}
 
 module.exports = {
   init,
