@@ -44,6 +44,9 @@ export const api = {
   processConversation: (id) => request(`/api/conversations/${id}/process`, {
     method: 'POST'
   }),
+  syncConversation: (id) => request(`/api/conversations/${id}/sync`, {
+    method: 'POST'
+  }),
 
   // Leads
   getLeads: (stage) => request(`/api/leads${stage ? `?stage=${stage}` : ''}`),
@@ -57,6 +60,7 @@ export const api = {
   getLeadDistribution: () => request('/api/leads/distribution'),
 
   importLead: (data) => request('/api/leads/import', { method: 'POST', body: data }),
+  deleteLead: (id) => request(`/api/leads/${id}`, { method: 'DELETE' }),
 
   // Assets
   getAssets: () => request('/api/assets'),
