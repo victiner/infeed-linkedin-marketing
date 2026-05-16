@@ -1,0 +1,26 @@
+# Dependencies — Railway/Render run `npm install` themselves
+node_modules/
+dashboard/node_modules/
+
+# Built dashboard — rebuilt at deploy time via postinstall
+dashboard/build/
+
+# Secrets
+.env
+.env.local
+.env.*.local
+
+# Local-only training backup (Airtable is the source of truth in prod)
+data/
+
+# macOS
+.DS_Store
+**/.DS_Store
+
+# Logs
+*.log
+npm-debug.log*
+
+# Editor
+.vscode/
+.idea/
