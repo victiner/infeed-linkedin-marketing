@@ -1,7 +1,7 @@
 # InFeed — Project Status
 
 **Last updated:** 2026-05-16
-**State:** Live pipeline operational with trained voice. Conversation display + HeyReach thread sync just landed — all outbound (cold opener, reply, follow-up) shows in the dashboard. First real lead (Krisztina) queued in HeyReach.
+**State:** Migrating from Airtable to Postgres. Code refactor done — all reads/writes now go through Postgres via `pg`. User must provision Supabase + paste DATABASE_URL into Railway, then trigger `POST /api/admin/migrate-from-airtable` to copy existing Airtable data over.
 
 ---
 
@@ -28,7 +28,9 @@ End-to-end validated 2026-05-16 07:50 with lead "Krisztina Toth" — draft pulle
 | `ANTHROPIC_API_KEY` | set, working | |
 | `ENABLE_POLLER` | `false` | Keep off — webhooks are the production path |
 | `AUTO_SEND_THRESHOLD` | unset (default `0.85`) | Recommend `2.0` for early ops → forces every reply to human review |
-| `AIRTABLE_API_KEY` / `AIRTABLE_BASE_ID` | set | Required for lead persistence |
+| **`DATABASE_URL`** | **needs to be set** | Supabase pooler URI — primary persistence. See migration playbook below |
+| `AIRTABLE_API_KEY` / `AIRTABLE_BASE_ID` | set | Kept temporarily for one-time migration. Can remove after migration completes |
+| `ADMIN_SECRET` | optional | Falls back to `WEBHOOK_SECRET` if unset. Required header for `POST /api/admin/*` |
 
 ---
 
@@ -140,6 +142,46 @@ HeyReach campaign 432820 has 3 totalUsers (seed + Pipeline Probe + Krisztina), 2
 - Memory entries describe project context, feedback rules, and references
 
 ---
+
+## Postgres migration playbook
+
+### Why
+Airtable free tier caps at 1000 records/base. Voice DNA alone hit ~981 (per pre-migration snapshot), leaving no headroom for leads/conversations/actions/training. New writes failed silently. On every Railway restart, the in-memory store would reload from Airtable, dropping the writes that never landed.
+
+### What changed in code
+- `src/db/index.js` — Postgres connection pool + schema bootstrap
+- `src/db/schema.sql` — 6 tables (leads, conversations, actions, training, ratings, voice_dna) with FK cascades + auto-`updated_at` trigger
+- `src/services/store.js` — full rewrite of every Airtable call → Postgres `pg` query. Exported API unchanged (42 functions, all backward compatible)
+- `src/services/voice-dna.js` — same migration: load + write to `voice_dna` table
+- `src/routes/settings.js` — added `POST /api/settings/test-db`
+- `src/routes/admin.js` — **new** `POST /api/admin/migrate-from-airtable` + `GET /api/admin/db-status`
+- `src/server.js` — calls `db.initSchema()` before `store.init()`
+- `package.json` — added `pg ^8.13.0`. `airtable` kept (for migration only)
+
+### Setup steps
+1. **Supabase project**: create at https://supabase.com → grab Connection string (URI, Transaction pooler mode), substitute the password.
+2. **Railway env var**: add `DATABASE_URL` = the Supabase URI.
+3. **Deploy**: push the code to GitHub → Railway redeploys → `db.initSchema()` runs → all 6 tables created automatically.
+4. **Migrate existing data**:
+   ```bash
+   curl -X POST https://infeed-marketing.up.railway.app/api/admin/migrate-from-airtable \
+     -H "x-admin-secret: $WEBHOOK_SECRET"
+   ```
+   Returns per-table counts (`{ read, migrated, skipped, errors }`).
+5. **Verify**:
+   ```bash
+   curl -H "x-admin-secret: $WEBHOOK_SECRET" \
+     https://infeed-marketing.up.railway.app/api/admin/db-status
+   ```
+   Should return row counts per table.
+6. (Optional) Once verified, remove `airtable` from `package.json` and the `AIRTABLE_*` env vars from Railway.
+
+### Schema notes
+- Primary keys are TEXT (uuid v4 from app). Synthetic IDs like `import-${leadId}` are valid.
+- `lead_id` foreign keys cascade on delete → no orphan conversations.
+- `conversation_id` foreign keys ON DELETE SET NULL on actions/ratings → preserves history for analytics.
+- All nested data (messages, drafts, notes, scenario, dna) stored as JSONB → queryable with `->>`.
+- `updated_at` auto-maintained by trigger on leads + conversations.
 
 ## Daily operational flow (once Krisztina validates)
 
