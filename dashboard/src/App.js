@@ -804,7 +804,18 @@ function InboxPanel({ onStats }) {
       const data = await api.getConversations();
       const convos = data.conversations || [];
       setConversations(convos);
-      if (convos.length && !selected) setSelected(convos[0]);
+      if (selected) {
+        const stillExists = convos.find(c => c.id === selected.id);
+        if (!stillExists && selected.lead?.id) {
+          // The selected synthetic conv was just merged into a real HeyReach
+          // conv ID. Follow the lead to its new conversation so we don't end
+          // up showing stale frozen state.
+          const replacement = convos.find(c => c.lead?.id === selected.lead.id);
+          if (replacement) setSelected(replacement);
+        }
+      } else if (convos.length) {
+        setSelected(convos[0]);
+      }
       if (onStats) onStats({ needsReply: convos.filter(c => c.pendingDraft).length });
     } catch (e) { setError(e.message); }
     setLoading(false);
@@ -853,6 +864,31 @@ function InboxPanel({ onStats }) {
     setSending(true);
     try { await api.processConversation(convoId); await load(); }
     catch (e) { setError(e.message); }
+    setSending(false);
+  };
+
+  const handleSync = async (convoId) => {
+    setSending(true);
+    try {
+      const result = await api.syncConversation(convoId);
+      if (!result.success) {
+        const friendly = {
+          no_heyreach_conv_yet: 'No HeyReach conversation exists yet — still queued for dispatch.',
+          no_lead_url: 'Lead has no LinkedIn URL to look up.',
+          lookup_failed: 'HeyReach lookup failed. Check the API key and try again.',
+          fetch_failed: 'HeyReach returned an error fetching the thread.',
+        }[result.reason] || `Sync did not complete (${result.reason || 'unknown'}).`;
+        setError(friendly);
+      }
+      // If the sync merged a synth conv into a real conv, the conv ID changed.
+      // Reload conversation list so the panel picks up the new ID, and re-select.
+      await load();
+      if (result.realConvId && result.realConvId !== convoId) {
+        const refreshed = await api.getConversations();
+        const next = (refreshed.conversations || []).find(c => c.id === result.realConvId);
+        if (next) setSelected(next);
+      }
+    } catch (e) { setError(e.message); }
     setSending(false);
   };
 
@@ -924,6 +960,11 @@ function InboxPanel({ onStats }) {
               </div>
               <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
                 {lead?.stage && <Badge label={lead.stage} />}
+                <button onClick={() => handleSync(sel.id)} disabled={sending}
+                  title="Pull the latest thread from HeyReach (campaign sends, manual LinkedIn replies, etc.)"
+                  style={{ fontSize: 12, padding: '5px 12px', border: 'none', borderRadius: 6, cursor: 'pointer', background: '#E8F4EA', color: '#2E7D3F', fontWeight: 500, fontFamily: "'IBM Plex Sans', system-ui, sans-serif" }}>
+                  Sync
+                </button>
                 <button onClick={() => handleReprocess(sel.id)} disabled={sending}
                   style={{ fontSize: 12, padding: '5px 12px', border: 'none', borderRadius: 6, cursor: 'pointer', background: '#E6F1FB', color: '#E8734A', fontWeight: 500, fontFamily: "'IBM Plex Sans', system-ui, sans-serif" }}>
                   Re-process
@@ -956,8 +997,20 @@ function InboxPanel({ onStats }) {
                         borderRadius: isUs ? '18px 18px 4px 18px' : '18px 18px 18px 4px',
                         boxShadow: isUs ? '0 1px 3px rgba(232,115,74,0.25)' : '0 1px 3px rgba(0,0,0,0.06)',
                         border: isUs ? 'none' : '0.5px solid rgba(0,0,0,0.06)',
-                        cursor: isUs ? 'pointer' : 'default'
+                        cursor: isUs ? 'pointer' : 'default',
+                        opacity: isUs && m.status === 'queued' ? 0.75 : 1
                       }}>{m.text}</div>
+
+                    {isUs && m.status === 'queued' && (
+                      <div style={{ fontSize: 10.5, color: '#9E9E9E', textAlign: 'right', marginTop: 3, paddingRight: 4 }}>
+                        Queued — HeyReach dispatching
+                      </div>
+                    )}
+                    {isUs && m.status === 'sent' && (
+                      <div style={{ fontSize: 10.5, color: '#9E9E9E', textAlign: 'right', marginTop: 3, paddingRight: 4 }}>
+                        Sent
+                      </div>
+                    )}
 
                     {/* Rewrite box */}
                     {isUs && isRewriting && (
@@ -1804,7 +1857,11 @@ function LeadsPanel() {
   const [sortBy, setSortBy]     = useState('updatedAt');
   const [sortDir, setSortDir]   = useState('desc');
   const [showImport, setShowImport] = useState(false);
-  const [importForm, setImportForm] = useState({ linkedInUrl: '', name: '', role: '', company: '', sendColdOpener: true });
+  const [importForm, setImportForm] = useState({
+    linkedInUrl: '', name: '', role: '', company: '',
+    industry: '', location: '', seniority: '', about: '',
+    sendColdOpener: false,
+  });
   const [importing, setImporting]   = useState(false);
   const [importResult, setImportResult] = useState(null);
   const [expandedLead, setExpandedLead] = useState(null);
@@ -1840,6 +1897,21 @@ function LeadsPanel() {
     setExtractingNotes(null);
   };
 
+  const [deletingLead, setDeletingLead] = useState(null);
+  const handleDeleteLead = async (lead, e) => {
+    e?.stopPropagation();
+    if (!window.confirm(`Delete "${lead.name}"? This removes the lead and all of its conversations from InFeed (and Airtable). Cannot be undone.`)) return;
+    setDeletingLead(lead.id);
+    try {
+      await api.deleteLead(lead.id);
+      setLeads(prev => (prev || []).filter(l => l.id !== lead.id));
+      if (expandedLead === lead.id) setExpandedLead(null);
+    } catch (err) {
+      alert('Delete failed: ' + err.message);
+    }
+    setDeletingLead(null);
+  };
+
   const load = () => api.getLeads().then(d => setLeads(d.leads || [])).catch(console.error);
   useEffect(() => { load(); const t = setInterval(load, 30000); return () => clearInterval(t); }, []);
 
@@ -1849,7 +1921,7 @@ function LeadsPanel() {
     try {
       const result = await api.importLead(importForm);
       setImportResult(result);
-      setImportForm({ linkedInUrl: '', name: '', role: '', company: '', sendColdOpener: true });
+      setImportForm({ linkedInUrl: '', name: '', role: '', company: '', industry: '', location: '', seniority: '', about: '', sendColdOpener: false });
       load();
       if (result.sent) setTimeout(() => { setShowImport(false); setImportResult(null); }, 3000);
     } catch (e) { setImportResult({ error: e.message }); }
@@ -1937,6 +2009,32 @@ function LeadsPanel() {
                 placeholder="Goldman Sachs" style={{ width: '100%', fontSize: 12, padding: '6px 10px', border: '0.5px solid var(--color-border-secondary)', borderRadius: 6, background: '#fff', fontFamily: "'IBM Plex Sans', system-ui, sans-serif", boxSizing: 'border-box' }} />
             </div>
           </div>
+
+          {/* Sales-Nav enrichment row — feeds the job-list matcher (industry/geo/experience axes)
+              and the placeholder system used by Claude. All optional. */}
+          <div className="if-grid-4" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 2fr', gap: 10, marginBottom: 10 }}>
+            <div>
+              <div style={{ fontSize: 11, color: '#6B6B6B', marginBottom: 3 }}>Industry</div>
+              <input value={importForm.industry} onChange={e => setImportForm(f => ({ ...f, industry: e.target.value }))}
+                placeholder="Investment Banking" style={{ width: '100%', fontSize: 12, padding: '6px 10px', border: '0.5px solid var(--color-border-secondary)', borderRadius: 6, background: '#fff', fontFamily: "'IBM Plex Sans', system-ui, sans-serif", boxSizing: 'border-box' }} />
+            </div>
+            <div>
+              <div style={{ fontSize: 11, color: '#6B6B6B', marginBottom: 3 }}>Location</div>
+              <input value={importForm.location} onChange={e => setImportForm(f => ({ ...f, location: e.target.value }))}
+                placeholder="Frankfurt" style={{ width: '100%', fontSize: 12, padding: '6px 10px', border: '0.5px solid var(--color-border-secondary)', borderRadius: 6, background: '#fff', fontFamily: "'IBM Plex Sans', system-ui, sans-serif", boxSizing: 'border-box' }} />
+            </div>
+            <div>
+              <div style={{ fontSize: 11, color: '#6B6B6B', marginBottom: 3 }}>Seniority</div>
+              <input value={importForm.seniority} onChange={e => setImportForm(f => ({ ...f, seniority: e.target.value }))}
+                placeholder="analyst / associate / vp / md" style={{ width: '100%', fontSize: 12, padding: '6px 10px', border: '0.5px solid var(--color-border-secondary)', borderRadius: 6, background: '#fff', fontFamily: "'IBM Plex Sans', system-ui, sans-serif", boxSizing: 'border-box' }} />
+            </div>
+            <div>
+              <div style={{ fontSize: 11, color: '#6B6B6B', marginBottom: 3 }}>About / headline (optional)</div>
+              <input value={importForm.about} onChange={e => setImportForm(f => ({ ...f, about: e.target.value }))}
+                placeholder="M&A Analyst at MHP | ex-PwC TS | MBS '24" style={{ width: '100%', fontSize: 12, padding: '6px 10px', border: '0.5px solid var(--color-border-secondary)', borderRadius: 6, background: '#fff', fontFamily: "'IBM Plex Sans', system-ui, sans-serif", boxSizing: 'border-box' }} />
+            </div>
+          </div>
+
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
               <div onClick={() => setImportForm(f => ({ ...f, sendColdOpener: !f.sendColdOpener }))} style={{
@@ -2070,10 +2168,17 @@ function LeadsPanel() {
                                 );
                               })()}
                             </div>
-                            <button onClick={(e) => reExtract(l.id, e)} disabled={extractingNotes === l.id}
-                              style={{ fontSize: 11, padding: '5px 12px', border: '0.5px solid #E8734A', borderRadius: 6, background: '#FFFFFF', color: '#E8734A', cursor: extractingNotes === l.id ? 'wait' : 'pointer', flexShrink: 0, fontFamily: "'IBM Plex Sans', system-ui, sans-serif" }}>
-                              {extractingNotes === l.id ? 'Extracting…' : 'Re-extract notes'}
-                            </button>
+                            <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+                              <button onClick={(e) => reExtract(l.id, e)} disabled={extractingNotes === l.id}
+                                style={{ fontSize: 11, padding: '5px 12px', border: '0.5px solid #E8734A', borderRadius: 6, background: '#FFFFFF', color: '#E8734A', cursor: extractingNotes === l.id ? 'wait' : 'pointer', fontFamily: "'IBM Plex Sans', system-ui, sans-serif" }}>
+                                {extractingNotes === l.id ? 'Extracting…' : 'Re-extract notes'}
+                              </button>
+                              <button onClick={(e) => handleDeleteLead(l, e)} disabled={deletingLead === l.id}
+                                title="Delete this lead and all its conversations"
+                                style={{ fontSize: 11, padding: '5px 12px', border: '0.5px solid #A32D2D', borderRadius: 6, background: '#FFFFFF', color: '#A32D2D', cursor: deletingLead === l.id ? 'wait' : 'pointer', fontFamily: "'IBM Plex Sans', system-ui, sans-serif" }}>
+                                {deletingLead === l.id ? 'Deleting…' : 'Delete lead'}
+                              </button>
+                            </div>
                           </div>
                         </td>
                       </tr>
