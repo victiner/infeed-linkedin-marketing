@@ -239,18 +239,44 @@ router.post('/import', async (req, res) => {
         routing_reason: 'Cold opener', confidence: 0.95, is_follow_up: false
       };
 
+      // Pull the same matrix-cell training (canonical examples + corrections
+      // + annotations + style/thumbs) that the reply flow uses, so cold-opener
+      // drafts respect the user's training instead of just the base prompt.
+      const router = require('../services/router');
+      const convoId = `import-${lead.id}`;
+      let liveGuidanceBreakdown = null;
       let draftText;
       if (step && !step.useAI && step.template) {
         draftText = campaigns.renderTemplate(step.template, lead);
       } else {
-        draftText = await claude.draftMessage([], leadProfile, routingDecision, null, templateGuidance);
+        try {
+          const guidance = await router.buildDraftGuidance({
+            lead,
+            leadProfile,
+            routingDecision,
+            asset: null,
+            thread: [],
+            conversationId: convoId,
+            templateGuidance,
+            workspaceId: lead.workspaceId,
+          });
+          draftText = await claude.draftMessage([], leadProfile, routingDecision, null, guidance.combinedGuidance);
+          liveGuidanceBreakdown = guidance.breakdown;
+          if (guidance.avatarId) routingDecision.avatar_id = guidance.avatarId;
+        } catch (err) {
+          // If anything in the training pull fails, fall back to the base
+          // prompt — better to send a generic message than fail the import.
+          console.error('[Import] buildDraftGuidance failed, falling back to plain draftMessage:', err.message);
+          draftText = await claude.draftMessage([], leadProfile, routingDecision, null, templateGuidance);
+        }
       }
 
-      // Create conversation + draft
-      const convoId = `import-${lead.id}`;
+      // Create conversation + draft (now with guidance breakdown attached so
+      // the dashboard's "what fed this?" panel can show what training shaped it)
       store.upsertConversation({ conversationId: convoId, leadId: lead.id, senderId: resolvedSenderId, messages: [] });
       const convoWithDraft = store.addDraftToConversation(convoId, {
-        text: draftText, routingDecision, asset: null, autoSendEligible: true
+        text: draftText, routingDecision, asset: null, autoSendEligible: true,
+        guidanceBreakdown: liveGuidanceBreakdown,
       });
       const storedDraft = convoWithDraft.drafts[convoWithDraft.drafts.length - 1];
 
