@@ -820,7 +820,165 @@ function normaliseWebhookPayload(payload) {
   };
 }
 
+// ============================================================================
+// SHARED: build training-aware guidance for any draft.
+// Pulls the same matrix-cell training (canonicals, corrections, annotations,
+// style/thumbs) that processInboundMessage uses for replies, so cold-opener
+// imports also get the user's trained voice.
+// Returns { combinedGuidance, breakdown, avatarId } — combinedGuidance is the
+// string passed to claude.draftMessage; breakdown is the structured object the
+// dashboard's "what fed this?" panel renders.
+// ============================================================================
+async function buildDraftGuidance({
+  lead, leadProfile, routingDecision,
+  asset = null, assetAlternates = [],
+  thread = [], conversationId = null,
+  templateGuidance = null, workspaceId,
+}) {
+  const wsId = workspaceId || workspace.getId();
+  const prefs = store.getTrainingPreferences(wsId);
+
+  const currentCtx = {
+    seniority:        leadProfile.seniority || 'unknown',
+    funnelStage:      routingDecision.funnel_stage || 'cold_opener',
+    sentiment:        routingDecision.sentiment || '',
+    assetSegment:     routingDecision.suggested_asset_segment || inferSegment(leadProfile.role, leadProfile.company),
+    role:             leadProfile.role     || '',
+    company:          leadProfile.company  || '',
+    location:         leadProfile.location || '',
+    nextObjection:    routingDecision.next_objection || '',
+    intent:           routingDecision.intent || '',
+    routingDecision:  routingDecision.routing_decision || '',
+  };
+
+  const scored = prefs.map(p => ({ ...p, _score: scoreTrainingRelevance(p, currentCtx) }));
+  const topByType = (type, max) => scored
+    .filter(p => p.type === type && p._score > 0)
+    .sort((a, b) => b._score - a._score)
+    .slice(0, max);
+
+  const corrections     = topByType('correction', 10).filter(p => p.original);
+  const annotationsTop  = topByType('annotation', 10).filter(p => p.selectedText && p.feedback);
+  const styleOnly       = topByType('draft', 5);
+  const thumbsUp        = topByType('thumbs_up', 5);
+  const thumbsDown      = topByType('thumbs_down', 5);
+
+  const THREAD_TAIL = 4;
+  const renderThread = (t) => Array.isArray(t) && t.length
+    ? t.slice(-THREAD_TAIL).map(m => `    [${m.sender === 'us' ? 'US' : 'THEM'}]: ${m.text}`).join('\n')
+    : null;
+
+  const correctionExamples = corrections.length ? corrections.map(p => {
+    const ctx = renderThread(p.thread);
+    return ctx
+      ? `  After this exchange:\n${ctx}\n    BAD: "${p.original}" → GOOD: "${p.chosen}"`
+      : `  BAD: "${p.original}" → GOOD: "${p.chosen}"`;
+  }).join('\n\n') : null;
+  const annotationExamples = annotationsTop.length ? annotationsTop.map(p => {
+    const ctx = renderThread(p.thread);
+    const core = `    In the message "${p.chosen}", the phrase "${p.selectedText}" was marked ${p.rating === 'good' ? 'GOOD' : 'BAD'}: ${p.feedback}`;
+    return ctx ? `  After this exchange:\n${ctx}\n${core}` : core;
+  }).join('\n\n') : null;
+  const styleExamples = styleOnly.length ? styleOnly.map(p => {
+    const ctx = renderThread(p.thread);
+    return ctx ? `  After this exchange:\n${ctx}\n    US wrote: "${p.chosen}"` : `  "${p.chosen}"`;
+  }).join('\n\n') : null;
+  const goodExamples = thumbsUp.length ? thumbsUp.map(p => {
+    const ctx = renderThread(p.thread);
+    return ctx ? `  After this exchange:\n${ctx}\n    US wrote (GOOD): "${p.chosen}"` : `  "${p.chosen}"`;
+  }).join('\n\n') : null;
+  const badExamples = thumbsDown.length ? thumbsDown.map(p => {
+    const ctx = renderThread(p.thread);
+    return ctx ? `  After this exchange:\n${ctx}\n    US wrote (BAD): "${p.chosen}"` : `  "${p.chosen}"`;
+  }).join('\n\n') : null;
+
+  // Avatar-cell canonical examples (highest priority)
+  let avatarBlock = null;
+  let avatarId = null;
+  let avatarCanonicalSource = 'empty';
+  let canonicalGoodPulled = [];
+  let canonicalBadPulled  = [];
+  let qaPulled = [];
+  try {
+    const cls = await avatars.classifyAvatar(thread, leadProfile, routingDecision, { conversationId });
+    avatarId = cls.avatarId;
+    const leadNotesObj = (lead && lead.notes && typeof lead.notes === 'object') ? lead.notes : {};
+    const ex = avatars.getCanonicalExamples(wsId, avatarId, {
+      limit: 3, lead: leadProfile, notes: leadNotesObj, asset, alternates: assetAlternates,
+    });
+    avatarCanonicalSource = ex.source || 'empty';
+    canonicalGoodPulled = (ex.good || []).map(e => ({ text: e.text, original: e.original || '', type: e.type, isCanonical: !!e.isCanonical, feedback: e.feedback || '', selectedText: e.selectedText || '' }));
+    canonicalBadPulled  = (ex.bad  || []).map(e => ({ text: e.text, original: e.original || '', type: e.type, isCanonical: !!e.isCanonical, feedback: e.feedback || '', selectedText: e.selectedText || '' }));
+
+    const lastInbound = [...(thread || [])].reverse().find(m => m.sender === 'them')?.text || '';
+    const looksLikeQuestion = lastInbound && (
+      lastInbound.includes('?') ||
+      /^(what|how|why|when|where|which|who|whose|whom|can|could|would|should|do|does|did|is|are|will|am)\b/i.test(lastInbound.trim()) ||
+      /\b(curious|wondering|tell me|explain|clarify)\b/i.test(lastInbound.trim())
+    );
+    let qaMatches = [];
+    if (looksLikeQuestion) {
+      try { qaMatches = avatars.findRelevantQAs(wsId, avatarId, lastInbound, { limit: 2 }); }
+      catch (err) { console.warn('[Router] Q&A retrieval failed:', err.message); }
+    }
+    qaPulled = qaMatches.map(qa => ({ question: qa.question, answer: qa.answer, score: qa.score, isCanonical: !!qa.isCanonical, source: qa.source }));
+
+    const renderEx = (e) => {
+      if (e.type === 'correction' && e.original) return `  BAD:  "${e.original}"\n  GOOD: "${e.text}"`;
+      if (e.type === 'annotation' && e.selectedText) return `  In "${e.text}", phrase "${e.selectedText}" → ${e.feedback || '(no feedback)'}`;
+      return `  "${e.text}"`;
+    };
+    const goodStr = ex.good.length ? ex.good.map(renderEx).join('\n\n') : '';
+    const badStr  = ex.bad.length  ? ex.bad.map(renderEx).join('\n\n')  : '';
+    const qaStr   = qaMatches.length
+      ? qaMatches.map(qa => `  Q: "${qa.question}"\n  A: "${qa.answer}"${qa.isCanonical ? ' (★ canonical)' : ''} [match: ${qa.score}]`).join('\n\n')
+      : '';
+    if (goodStr || badStr || qaStr) {
+      avatarBlock = `\n=== CANONICAL EXAMPLES FOR THIS AVATAR (${avatarId}, source: ${ex.source}) ===\nThese are the highest-signal examples for THIS exact context. Mimic the GOOD ones in shape and rhythm; never write like the BAD ones.${qaStr ? `\n\nQ&A REFERENCE — the lead's last message looks like a question. Closest answered questions for this context (use the answer style, adapt to their exact wording):\n${qaStr}` : ''}${goodStr ? `\n\nGOOD (write like these):\n${goodStr}` : ''}${badStr ? `\n\nBAD (never write like these):\n${badStr}` : ''}`;
+      console.log(`[Router] Avatar ${avatarId}: ${ex.good.length} good + ${ex.bad.length} bad + ${qaMatches.length} qa (${ex.source})`);
+    }
+  } catch (err) {
+    console.warn('[Router] Avatar classification failed in buildDraftGuidance:', err.message);
+  }
+
+  const combinedGuidance = [
+    templateGuidance,
+    avatarBlock,
+    correctionExamples ? `\nREWRITES — THESE CARRY THE MOST WEIGHT. Never write like the BAD version, always match the GOOD version's approach:\n${correctionExamples}` : null,
+    annotationExamples ? `\nPHRASE-LEVEL FEEDBACK — user highlighted these phrases and commented. Respect the feedback:\n${annotationExamples}` : null,
+    styleExamples ? `\nSTYLE EXAMPLES (match this tone and length):\n${styleExamples}` : null,
+    goodExamples ? `\nGOOD DRAFTS (rated + by user — write more like these):\n${goodExamples}` : null,
+    badExamples ? `\nBAD DRAFTS (rated − by user — never write like these):\n${badExamples}` : null,
+  ].filter(Boolean).join('\n') || null;
+
+  const breakdown = {
+    avatarId: avatarId || null,
+    canonicalSource: avatarCanonicalSource,
+    canonicalGood: canonicalGoodPulled,
+    canonicalBad:  canonicalBadPulled,
+    qa:            qaPulled,
+    corrections:   corrections.map(p => ({ original: p.original, chosen: p.chosen, threadTail: Array.isArray(p.thread) ? p.thread.slice(-4) : [] })),
+    annotations:   annotationsTop.map(p => ({ chosen: p.chosen, selectedText: p.selectedText, feedback: p.feedback, rating: p.rating, threadTail: Array.isArray(p.thread) ? p.thread.slice(-4) : [] })),
+    style:         styleOnly.map(p => ({ chosen: p.chosen, threadTail: Array.isArray(p.thread) ? p.thread.slice(-4) : [] })),
+    thumbsUp:      thumbsUp.map(p => ({ chosen: p.chosen, threadTail: Array.isArray(p.thread) ? p.thread.slice(-4) : [] })),
+    thumbsDown:    thumbsDown.map(p => ({ chosen: p.chosen, threadTail: Array.isArray(p.thread) ? p.thread.slice(-4) : [] })),
+    counts: {
+      canonicalGood: canonicalGoodPulled.length,
+      canonicalBad:  canonicalBadPulled.length,
+      qa:            qaPulled.length,
+      corrections:   corrections.length,
+      annotations:   annotationsTop.length,
+      style:         styleOnly.length,
+      thumbsUp:      thumbsUp.length,
+      thumbsDown:    thumbsDown.length,
+    },
+  };
+
+  return { combinedGuidance, breakdown, avatarId };
+}
+
 module.exports = {
   processInboundMessage, sendProactiveStep, sendApprovedDraft,
   scoreTrainingRelevance, inferSegment, classifySeniority, buildLeadProfile,
+  buildDraftGuidance,
 };
